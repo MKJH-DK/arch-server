@@ -1,0 +1,118 @@
+---
+- name: Deploy Secure Arch Server
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  become: yes
+
+  vars:
+    admin_user: admin
+    webserver_user: root
+    domain_email: "{{ lookup('env', 'DOMAIN_EMAIL') | default('', true) }}"
+    cloudflare_enabled: true
+
+  pre_tasks:
+    # Multi-domain support: parse DOMAINS env var (comma-separated) into domains list
+    # Format: "example.com,blog.example.com:/srv/blog,shop.example.com"
+    # Each entry can optionally specify webroot after colon (default: /srv/www)
+    - name: Parse DOMAINS env var into domains list
+      set_fact:
+        _domains_raw: "{{ lookup('env', 'DOMAINS') }}"
+      when:
+        - lookup('env', 'DOMAINS') | length > 0
+        - domains | default([]) | length == 0
+
+    - name: Build domains list from DOMAINS env var
+      set_fact:
+        domains: >-
+          {{ domains | default([]) + [
+            {
+              'domain': item.split(':')[0] | trim,
+              'root': (item.split(':')[1] | trim) if ':' in item else '/srv/www'
+            }
+          ] }}
+      loop: "{{ _domains_raw.split(',') }}"
+      when:
+        - _domains_raw is defined
+        - _domains_raw | length > 0
+        - item | trim | length > 0
+
+    # Backward compatibility: if DOMAIN env var is set and domains list is still empty,
+    # convert single DOMAIN to domains list format
+    - name: Check for legacy DOMAIN env var
+      set_fact:
+        domains: "{{ domains | default([]) + [{'domain': lookup('env', 'DOMAIN'), 'root': '/srv/www'}] }}"
+      when:
+        - lookup('env', 'DOMAIN') | length > 0
+        - domains | default([]) | length == 0
+
+    - name: Display deployment info
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  ARCH SERVER - SECURE DEPLOYMENT"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - ""
+          - "  Hostname: {{ ansible_facts['hostname'] }}"
+          - "  IP: {{ ansible_facts['default_ipv4']['address'] | default('N/A') }}"
+          - "  Domains: {{ domains | map(attribute='domain') | join(', ') if domains | default([]) | length > 0 else 'IP-only mode (:80)' }}"
+          - "  Cloudflare: {{ 'ENABLED' if cloudflare_enabled else 'DISABLED' }}"
+          - ""
+
+  roles:
+    - role: base_hardening
+      tags: [base, hardening]
+
+    - role: security_stack
+      tags: [security, firewall]
+
+    - role: container_runtime
+      tags: [containers, podman]
+
+    - role: cloudflare
+      tags: [cloudflare, network]
+      when: cloudflare_enabled
+
+    - role: webserver
+      tags: [web, caddy]
+
+    - role: monitoring
+      tags: [monitoring]
+
+    - role: safe_updates
+      tags: [updates, snapshots]
+
+  post_tasks:
+    - name: Run health check
+      command: /usr/local/bin/health-check
+      register: health
+      failed_when: false
+      changed_when: false
+
+    - name: Display health results
+      debug:
+        var: health.stdout_lines
+      when: health.stdout_lines is defined
+
+    - name: Deployment complete
+      debug:
+        msg:
+          - ""
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  DEPLOYMENT COMPLETE"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - ""
+          - "  Services:"
+          - "    Caddy:    systemctl status caddy"
+          - "    Firewall: systemctl status nftables"
+          - "    Snapshots: snapper list"
+          - ""
+          - "  Access:"
+          - "    Local: http://{{ ansible_facts['default_ipv4']['address'] | default('localhost') }}"
+          - "{% for site in domains | default([]) %}    Domain: https://{{ site.domain }}"
+          - "{% endfor %}"
+          - ""
+          - "  Next Steps:"
+          - "    1. Setup Cloudflare: /root/arch/scripts/setup-cloudflare.sh"
+          - "    2. Verify: /usr/local/bin/health-check"
+          - ""

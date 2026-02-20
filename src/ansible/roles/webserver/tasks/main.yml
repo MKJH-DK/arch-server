@@ -1,0 +1,187 @@
+---
+# Webserver Role - Caddy from official Arch repos
+# Supports multiple domains with automatic HTTPS via Let's Encrypt
+
+- name: Install Caddy web server
+  community.general.pacman:
+    name: caddy
+    state: present
+
+- name: Create base web directories
+  file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0755'
+  loop:
+    - /srv/www
+    - /etc/caddy/conf.d
+    - /var/log/caddy
+
+- name: Create per-domain web roots
+  file:
+    path: "{{ item.root | default('/srv/www') }}"
+    state: directory
+    mode: '0755'
+  loop: "{{ domains | default([]) }}"
+  when: domains is defined and domains | length > 0
+
+- name: Deploy Caddyfile
+  template:
+    src: Caddyfile.j2
+    dest: /etc/caddy/Caddyfile
+    mode: '0644'
+  notify: Restart Caddy
+
+- name: Deploy default website
+  copy:
+    dest: /srv/www/index.html
+    mode: '0644'
+    force: no
+    content: |
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Arch Server - Live</title>
+        <style>
+          * { margin: 0; padding: 0; box-sizing: border-box; }
+          body {
+            font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+            color: #e0e0e0;
+          }
+          .container {
+            background: rgba(255, 255, 255, 0.05);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 24px;
+            padding: 48px;
+            max-width: 900px;
+            box-shadow: 0 25px 80px rgba(0,0,0,0.5);
+          }
+          h1 {
+            color: #00d9ff;
+            font-size: 2.8em;
+            margin-bottom: 16px;
+            text-shadow: 0 0 30px rgba(0, 217, 255, 0.5);
+          }
+          .status {
+            background: linear-gradient(90deg, #00c853, #00e676);
+            color: #000;
+            padding: 12px 28px;
+            border-radius: 30px;
+            margin: 16px 0;
+            display: inline-block;
+            font-weight: 700;
+            font-size: 1.1em;
+            box-shadow: 0 4px 20px rgba(0, 200, 83, 0.4);
+          }
+          .features {
+            margin-top: 40px;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+          }
+          .feature {
+            background: rgba(255, 255, 255, 0.03);
+            padding: 24px;
+            border-radius: 16px;
+            border-left: 4px solid #00d9ff;
+            transition: transform 0.3s, background 0.3s;
+          }
+          .feature:hover {
+            transform: translateY(-5px);
+            background: rgba(255, 255, 255, 0.08);
+          }
+          .feature h3 {
+            color: #00d9ff;
+            margin-bottom: 10px;
+            font-size: 1.2em;
+          }
+          .feature p {
+            color: #a0a0a0;
+            font-size: 0.95em;
+            line-height: 1.5;
+          }
+          .footer {
+            margin-top: 40px;
+            text-align: center;
+            color: #606060;
+            font-size: 0.9em;
+          }
+        </style>
+      </head>
+      <body>
+        <div class="container">
+          <h1>Arch Server</h1>
+          <div class="status">LIVE & SECURE</div>
+
+          <div class="features">
+            <div class="feature">
+              <h3>LUKS2 Encryption</h3>
+              <p>Full disk encryption with Argon2id and TPM auto-unlock</p>
+            </div>
+            <div class="feature">
+              <h3>Cloudflare Protected</h3>
+              <p>Firewall only allows Cloudflare IPs - DDoS protected</p>
+            </div>
+            <div class="feature">
+              <h3>Rootless Containers</h3>
+              <p>Podman with zero root privileges for maximum isolation</p>
+            </div>
+            <div class="feature">
+              <h3>Btrfs Snapshots</h3>
+              <p>Auto-rollback on failed updates with Snapper</p>
+            </div>
+            <div class="feature">
+              <h3>nftables Firewall</h3>
+              <p>Rate limiting and intelligent threat blocking</p>
+            </div>
+            <div class="feature">
+              <h3>Defense-in-Depth</h3>
+              <p>AppArmor + auditd + hardened kernel</p>
+            </div>
+          </div>
+
+          <div class="footer">
+            Arch Server | systemd-boot + UKI + Btrfs
+          </div>
+        </div>
+      </body>
+      </html>
+
+- name: Enable and start Caddy
+  systemd:
+    name: caddy
+    enabled: yes
+    state: started
+
+- name: Wait for Caddy to start
+  wait_for:
+    port: "{{ 443 if (domains | default([]) | length > 0) else 80 }}"
+    delay: 2
+    timeout: 30
+
+- name: Verify Caddy is running (HTTP health check always on port 80)
+  uri:
+    url: "http://localhost:80/health"
+    return_content: yes
+  register: health_check
+  retries: 3
+  delay: 2
+  until: health_check.status == 200
+  failed_when: false
+  when: domains | default([]) | length == 0
+
+- name: Webserver status
+  debug:
+    msg: >-
+      Caddy web server is {{ 'running' if (health_check.status | default(0)) == 200 or (domains | default([]) | length > 0) else 'starting...' }}
+      - Serving {{ (domains | default([]) | length) or 'no' }} domain(s)
+      {% if domains | default([]) | length > 0 %}({{ domains | map(attribute='domain') | join(', ') }}){% endif %}

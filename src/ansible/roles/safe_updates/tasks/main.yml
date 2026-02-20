@@ -1,0 +1,129 @@
+---
+# Safe Updates Role for Arch Linux v5.1
+# Snapper for Btrfs snapshots with proper error handling
+
+- name: Install Snapper
+  community.general.pacman:
+    name:
+      - snapper
+      - snap-pac
+    state: present
+
+- name: Check if snapper config already exists
+  command: snapper -c root list-configs
+  register: snapper_configs
+  changed_when: false
+  failed_when: false
+
+- name: Check if root config exists
+  set_fact:
+    snapper_root_exists: "{{ 'root' in snapper_configs.stdout }}"
+
+- name: Create Snapper config for root (if not exists)
+  command: snapper -c root create-config /
+  when: not snapper_root_exists
+  register: snapper_create
+  failed_when: false
+
+- name: Handle snapper config error
+  debug:
+    msg: 
+      - "Snapper config creation returned: {{ snapper_create.rc | default('skipped') }}"
+      - "This is normal if config already exists or subvolume is not .snapshots"
+  when: snapper_create is defined and snapper_create.rc is defined and snapper_create.rc != 0
+
+- name: Check if snapper config file exists
+  stat:
+    path: /etc/snapper/configs/root
+  register: snapper_config_file
+
+- name: Configure Snapper retention
+  lineinfile:
+    path: /etc/snapper/configs/root
+    regexp: "^{{ item.key }}="
+    line: "{{ item.key }}=\"{{ item.value }}\""
+  loop:
+    - { key: "TIMELINE_CREATE", value: "yes" }
+    - { key: "TIMELINE_CLEANUP", value: "yes" }
+    - { key: "TIMELINE_MIN_AGE", value: "1800" }
+    - { key: "TIMELINE_LIMIT_HOURLY", value: "5" }
+    - { key: "TIMELINE_LIMIT_DAILY", value: "7" }
+    - { key: "TIMELINE_LIMIT_WEEKLY", value: "4" }
+    - { key: "TIMELINE_LIMIT_MONTHLY", value: "6" }
+    - { key: "TIMELINE_LIMIT_YEARLY", value: "2" }
+  when: snapper_config_file.stat.exists
+
+- name: Enable Snapper timeline timer
+  systemd:
+    name: snapper-timeline.timer
+    enabled: yes
+    state: started
+  failed_when: false
+
+- name: Enable Snapper cleanup timer
+  systemd:
+    name: snapper-cleanup.timer
+    enabled: yes
+    state: started
+  failed_when: false
+
+- name: Create initial deployment snapshot
+  command: snapper -c root create --description "Ansible deployment - {{ ansible_date_time.iso8601 }}"
+  register: snapshot_create
+  changed_when: true
+  failed_when: false
+
+- name: Display snapshot info
+  debug:
+    msg: "{{ 'Initial snapshot created' if snapshot_create.rc == 0 else 'Snapshot creation skipped (check snapper config)' }}"
+
+- name: Create pacman hooks directory
+  file:
+    path: /etc/pacman.d/hooks
+    state: directory
+    mode: '0755'
+
+- name: Create pacman hook for pre-update snapshots
+  copy:
+    dest: /etc/pacman.d/hooks/00-snapper-pre.hook
+    mode: '0644'
+    content: |
+      [Trigger]
+      Operation = Install
+      Operation = Upgrade
+      Operation = Remove
+      Type = Package
+      Target = *
+      
+      [Action]
+      Description = Creating pre-update snapshot...
+      When = PreTransaction
+      Exec = /usr/bin/snapper -c root create --description "pacman pre-update"
+  when: snapper_config_file.stat.exists
+
+- name: Create pacman hook for post-update snapshots  
+  copy:
+    dest: /etc/pacman.d/hooks/99-snapper-post.hook
+    mode: '0644'
+    content: |
+      [Trigger]
+      Operation = Install
+      Operation = Upgrade
+      Operation = Remove
+      Type = Package
+      Target = *
+      
+      [Action]
+      Description = Creating post-update snapshot...
+      When = PostTransaction
+      Exec = /usr/bin/snapper -c root create --description "pacman post-update"
+  when: snapper_config_file.stat.exists
+
+- name: Safe updates complete
+  debug:
+    msg: 
+      - "✓ Snapper configured for safe updates"
+      - "  Commands:"
+      - "    snapper list          - Show snapshots"
+      - "    snapper undochange N  - Rollback to snapshot N"
+      - "    snapper diff N..0     - Show changes since snapshot N"

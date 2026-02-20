@@ -1,0 +1,11 @@
+---
+- name: Restart journald
+  systemd:
+    name: systemd-journald
+    state: restarted
+
+- name: Restart Fluent Bit
+  systemd:
+    name: fluent-bit
+    state: restarted
+  failed_when: false

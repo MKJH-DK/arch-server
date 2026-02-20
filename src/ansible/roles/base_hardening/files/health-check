@@ -1,0 +1,395 @@
+#!/bin/bash
+# Health Check Script for Arch Linux v5.1
+# Comprehensive system health verification
+
+set -euo pipefail
+
+# Colors
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m'
+
+# Counters
+PASSED=0
+FAILED=0
+WARNINGS=0
+
+# Output format
+JSON_OUTPUT=false
+if [[ "${1:-}" == "--json" ]]; then
+    JSON_OUTPUT=true
+fi
+
+check_pass() {
+    PASSED=$((PASSED + 1))
+    if ! $JSON_OUTPUT; then
+        echo -e "${GREEN}✓${NC} $1"
+    fi
+}
+
+check_fail() {
+    FAILED=$((FAILED + 1))
+    if ! $JSON_OUTPUT; then
+        echo -e "${RED}✗${NC} $1"
+    fi
+}
+
+check_warn() {
+    WARNINGS=$((WARNINGS + 1))
+    if ! $JSON_OUTPUT; then
+        echo -e "${YELLOW}!${NC} $1"
+    fi
+}
+
+# Header
+if ! $JSON_OUTPUT; then
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo "  ARCH LINUX v5.1 HEALTH CHECK"
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+fi
+
+# System Checks
+if ! $JSON_OUTPUT; then
+    echo -e "${BLUE}[SYSTEM]${NC}"
+fi
+
+# Check if system is Arch
+if [ -f /etc/arch-release ]; then
+    check_pass "Arch Linux detected"
+else
+    check_fail "Not Arch Linux"
+fi
+
+# Check systemd
+if systemctl is-system-running &>/dev/null; then
+    check_pass "Systemd running"
+else
+    check_warn "Systemd issues detected"
+fi
+
+# Check network
+if ping -c 1 -W 2 1.1.1.1 &>/dev/null; then
+    check_pass "Network connectivity"
+else
+    check_warn "No internet connection"
+fi
+
+# Service Checks
+if ! $JSON_OUTPUT; then
+    echo ""
+    echo -e "${BLUE}[SERVICES]${NC}"
+fi
+
+# Caddy
+if systemctl is-active caddy &>/dev/null; then
+    check_pass "Caddy web server"
+else
+    check_fail "Caddy not running"
+fi
+
+# nftables (oneshot service - check if rules are loaded)
+if nft list tables 2>/dev/null | grep -q "inet filter"; then
+    check_pass "nftables firewall (rules loaded)"
+elif nft list ruleset 2>/dev/null | grep -q "chain"; then
+    check_pass "nftables firewall (rules loaded)"
+else
+    check_warn "nftables rules not loaded"
+fi
+
+# SSH
+if systemctl is-active sshd &>/dev/null; then
+    check_pass "SSH daemon"
+else
+    check_warn "SSH not running"
+fi
+
+# AppArmor
+if systemctl is-active apparmor &>/dev/null; then
+    check_pass "AppArmor"
+else
+    check_warn "AppArmor not running"
+fi
+
+# Auditd
+if systemctl is-active auditd &>/dev/null; then
+    check_pass "Audit daemon"
+else
+    check_warn "Auditd not running"
+fi
+
+# Snapper timers
+if systemctl is-active snapper-timeline.timer &>/dev/null; then
+    check_pass "Snapper timeline"
+else
+    check_warn "Snapper timeline not running"
+fi
+
+# Web Checks
+if ! $JSON_OUTPUT; then
+    echo ""
+    echo -e "${BLUE}[WEB SERVER]${NC}"
+fi
+
+# Check port 80
+if ss -tlnp | grep -q ':80 '; then
+    check_pass "Port 80 listening"
+else
+    check_fail "Port 80 not listening"
+fi
+
+# Check web response
+if curl -sf -o /dev/null http://localhost/health 2>/dev/null; then
+    check_pass "Web server responding"
+elif curl -sf -o /dev/null http://localhost/ 2>/dev/null; then
+    check_pass "Web server responding (no health endpoint)"
+else
+    check_fail "Web server not responding"
+fi
+
+# Security Checks
+if ! $JSON_OUTPUT; then
+    echo ""
+    echo -e "${BLUE}[SECURITY]${NC}"
+fi
+
+# Check root login disabled
+if grep -q "^PermitRootLogin.*no\|^PermitRootLogin.*prohibit-password" /etc/ssh/sshd_config 2>/dev/null; then
+    check_pass "Root SSH login restricted"
+else
+    check_warn "Root SSH login not restricted"
+fi
+
+# Check firewall rules (input chain should have policy drop)
+if nft list chain inet filter input 2>/dev/null | grep -q "policy drop"; then
+    check_pass "Firewall default deny policy"
+elif nft list ruleset 2>/dev/null | grep -q "policy drop"; then
+    check_pass "Firewall default deny policy"
+else
+    check_warn "Firewall policy not set to deny"
+fi
+
+# Check if hardened kernel
+if uname -r | grep -q "hardened"; then
+    check_pass "Hardened kernel"
+else
+    check_warn "Standard kernel (not hardened)"
+fi
+
+# Container Checks
+if ! $JSON_OUTPUT; then
+    echo ""
+    echo -e "${BLUE}[CONTAINERS]${NC}"
+fi
+
+if command -v podman &>/dev/null; then
+    check_pass "Podman installed"
+else
+    check_warn "Podman not found"
+fi
+
+# Storage Checks
+if ! $JSON_OUTPUT; then
+    echo ""
+    echo -e "${BLUE}[STORAGE]${NC}"
+fi
+
+# Check snapshots
+if command -v snapper &>/dev/null; then
+    SNAPSHOT_COUNT=$(snapper list 2>/dev/null | wc -l || echo "0")
+    if [ "$SNAPSHOT_COUNT" -gt 5 ]; then
+        check_pass "Btrfs snapshots active ($SNAPSHOT_COUNT snapshots)"
+    else
+        check_warn "Few Btrfs snapshots ($SNAPSHOT_COUNT found)"
+    fi
+else
+    check_warn "Snapper not available"
+fi
+
+# Advanced Security Checks
+if ! $JSON_OUTPUT; then
+    echo ""
+    echo -e "${BLUE}[ADVANCED SECURITY]${NC}"
+fi
+
+# Check TPM
+if [ -e /dev/tpm0 ] || [ -e /dev/tpmrm0 ]; then
+    check_pass "TPM device available"
+else
+    check_warn "TPM device not found"
+fi
+
+# Check Secure Boot
+if [ -d /sys/firmware/efi ]; then
+    if mokutil --sb-state 2>/dev/null | grep -q "SecureBoot enabled"; then
+        check_pass "Secure Boot enabled"
+    else
+        check_warn "Secure Boot disabled"
+    fi
+fi
+
+# Check CrowdSec
+if command -v cscli &>/dev/null; then
+    if systemctl is-active crowdsec &>/dev/null; then
+        check_pass "CrowdSec intrusion detection"
+    else
+        check_warn "CrowdSec installed but not running"
+    fi
+else
+    check_warn "CrowdSec not installed"
+fi
+
+# Check certificates (if domain configured)
+if [ -f /etc/ssl/caddy/certificates/ ]; then
+    CERT_COUNT=$(find /etc/ssl/caddy/certificates/ -name "*.crt" 2>/dev/null | wc -l)
+    if [ "$CERT_COUNT" -gt 0 ]; then
+        check_pass "SSL certificates found ($CERT_COUNT certificates)"
+    else
+        check_warn "No SSL certificates found"
+    fi
+fi
+
+# Performance Checks
+if ! $JSON_OUTPUT; then
+    echo ""
+    echo -e "${BLUE}[PERFORMANCE]${NC}"
+fi
+
+# Check system load
+LOAD=$(uptime | awk -F'load average:' '{ print $2 }' | cut -d, -f1 | xargs)
+LOAD_INT=$(echo "$LOAD < 2.0" | bc -l 2>/dev/null || echo "1")
+if [ "$LOAD_INT" -eq 1 ]; then
+    check_pass "System load OK ($LOAD)"
+else
+    check_warn "High system load ($LOAD)"
+fi
+
+# Check memory usage
+MEM_USAGE=$(free | grep Mem | awk '{printf "%.0f", $3/$2 * 100.0}')
+if [ "$MEM_USAGE" -lt 80 ]; then
+    check_pass "Memory usage OK (${MEM_USAGE}% used)"
+elif [ "$MEM_USAGE" -lt 95 ]; then
+    check_warn "High memory usage (${MEM_USAGE}% used)"
+else
+    check_fail "Critical memory usage (${MEM_USAGE}% used)"
+fi
+
+# Check journal size
+JOURNAL_SIZE=$(journalctl --disk-usage 2>/dev/null | awk '{print $7}' | sed 's/M//g' || echo "0")
+if [ "$JOURNAL_SIZE" -lt 500 ]; then
+    check_pass "Journal size OK (${JOURNAL_SIZE}M)"
+else
+    check_warn "Large journal size (${JOURNAL_SIZE}M)"
+fi
+
+# System Health Checks
+if ! $JSON_OUTPUT; then
+    echo ""
+    echo -e "${BLUE}[SYSTEM HEALTH]${NC}"
+fi
+
+# Check failed services
+FAILED_SERVICES=$(systemctl --failed --quiet --no-legend 2>/dev/null | wc -l)
+if [ "$FAILED_SERVICES" -eq 0 ]; then
+    check_pass "No failed services"
+else
+    check_fail "$FAILED_SERVICES failed services detected"
+fi
+
+# Check security logs
+if [ -f /var/log/audit/audit.log ]; then
+    AUDIT_ENTRIES=$(wc -l < /var/log/audit/audit.log 2>/dev/null || echo "0")
+    if [ "$AUDIT_ENTRIES" -gt 100 ]; then
+        check_pass "Security auditing active ($AUDIT_ENTRIES entries)"
+    else
+        check_warn "Low audit activity ($AUDIT_ENTRIES entries)"
+    fi
+fi
+
+# Check Btrfs
+if mount | grep -q "type btrfs"; then
+    check_pass "Btrfs filesystem"
+else
+    check_warn "Not using Btrfs"
+fi
+
+# Check LUKS
+if lsblk -o TYPE | grep -q "crypt"; then
+    check_pass "LUKS encryption active"
+else
+    check_warn "No LUKS encryption detected"
+fi
+
+# Check disk space
+ROOT_USAGE=$(df / --output=pcent | tail -1 | tr -d ' %')
+if [ "$ROOT_USAGE" -lt 80 ]; then
+    check_pass "Disk space OK (${ROOT_USAGE}% used)"
+elif [ "$ROOT_USAGE" -lt 90 ]; then
+    check_warn "Disk space warning (${ROOT_USAGE}% used)"
+else
+    check_fail "Disk space critical (${ROOT_USAGE}% used)"
+fi
+
+
+# Calculate score
+TOTAL=$((PASSED + FAILED + WARNINGS))
+if [ $TOTAL -gt 0 ]; then
+    SCORE=$(( (PASSED * 100) / TOTAL ))
+else
+    SCORE=0
+fi
+
+# Collect additional metrics for JSON
+SNAPSHOT_COUNT=$(snapper list 2>/dev/null | wc -l || echo "0")
+LOAD=$(uptime | awk -F'load average:' '{ print $2 }' | cut -d, -f1 | xargs)
+MEM_USAGE=$(free | grep Mem | awk '{printf "%.0f", $3/$2 * 100.0}')
+JOURNAL_SIZE=$(journalctl --disk-usage 2>/dev/null | awk '{print $7}' | sed 's/M//g' || echo "0")
+FAILED_SERVICES=$(systemctl --failed --quiet --no-legend 2>/dev/null | wc -l)
+ROOT_USAGE=$(df / --output=pcent | tail -1 | tr -d ' %')
+TPM_AVAILABLE=$([ -e /dev/tpm0 ] || [ -e /dev/tpmrm0 ] && echo "true" || echo "false")
+SECURE_BOOT=$([ -d /sys/firmware/efi ] && mokutil --sb-state 2>/dev/null | grep -q "SecureBoot enabled" && echo "true" || echo "false")
+
+# Output
+if $JSON_OUTPUT; then
+    cat << EOF
+{
+    "score": $SCORE,
+    "passed": $PASSED,
+    "failed": $FAILED,
+    "warnings": $WARNINGS,
+    "total": $TOTAL,
+    "timestamp": "$(date -Iseconds)",
+    "metrics": {
+        "system_load": "$LOAD",
+        "memory_usage_percent": $MEM_USAGE,
+        "disk_usage_percent": $ROOT_USAGE,
+        "journal_size_mb": $JOURNAL_SIZE,
+        "failed_services": $FAILED_SERVICES,
+        "btrfs_snapshots": $SNAPSHOT_COUNT,
+        "tpm_available": $TPM_AVAILABLE,
+        "secure_boot_enabled": $SECURE_BOOT
+    }
+}
+EOF
+else
+    echo ""
+    echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    echo ""
+    echo -e "  Score: ${GREEN}${SCORE}%${NC}"
+    echo -e "  Passed: ${GREEN}${PASSED}${NC}  Failed: ${RED}${FAILED}${NC}  Warnings: ${YELLOW}${WARNINGS}${NC}"
+    echo ""
+    
+    if [ $FAILED -eq 0 ] && [ $SCORE -ge 80 ]; then
+        echo -e "  ${GREEN}✓ System is healthy and secure${NC}"
+    elif [ $FAILED -gt 0 ]; then
+        echo -e "  ${RED}✗ System has issues that need attention${NC}"
+    else
+        echo -e "  ${YELLOW}! System is functional with some warnings${NC}"
+    fi
+    echo ""
+fi
+
+exit $FAILED

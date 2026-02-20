@@ -1,0 +1,92 @@
+---
+# Container Runtime Role for Arch Linux v5.1
+# Podman setup with rootless support
+
+- name: Install Podman and dependencies
+  community.general.pacman:
+    name:
+      - podman
+      - fuse-overlayfs
+      - slirp4netns
+      - cni-plugins
+      - aardvark-dns
+      - crun
+      - skopeo
+      - buildah
+    state: present
+
+- name: Configure subuid for admin user
+  lineinfile:
+    path: /etc/subuid
+    line: "{{ admin_user }}:100000:65536"
+    create: yes
+    mode: '0644'
+  when: admin_user is defined
+
+- name: Configure subgid for admin user
+  lineinfile:
+    path: /etc/subgid
+    line: "{{ admin_user }}:100000:65536"
+    create: yes
+    mode: '0644'
+  when: admin_user is defined
+
+- name: Create Podman configuration directory
+  file:
+    path: /etc/containers
+    state: directory
+    mode: '0755'
+
+- name: Configure Podman registries
+  copy:
+    dest: /etc/containers/registries.conf
+    mode: '0644'
+    content: |
+      # Container registries configuration
+      # Arch Linux v5.1
+      
+      [registries.search]
+      registries = ['docker.io', 'quay.io', 'ghcr.io']
+      
+      [registries.block]
+      registries = []
+
+- name: Configure Podman storage
+  copy:
+    dest: /etc/containers/storage.conf
+    mode: '0644'
+    content: |
+      [storage]
+      driver = "overlay"
+      graphroot = "/var/lib/containers/storage"
+      runroot = "/run/containers/storage"
+      
+      [storage.options.overlay]
+      mount_program = "/usr/bin/fuse-overlayfs"
+      mountopt = "nodev,metacopy=on"
+
+- name: Enable Podman socket for root
+  systemd:
+    name: podman.socket
+    enabled: yes
+    state: started
+  failed_when: false
+
+- name: Test Podman installation
+  command: podman info --format json
+  register: podman_info
+  changed_when: false
+  failed_when: false
+
+- name: Container runtime status
+  debug:
+    msg:
+      - "✓ Podman container runtime installed"
+      - "  Version: {{ (podman_info.stdout | from_json).version.Version | default('N/A') }}"
+      - "  Storage: {{ (podman_info.stdout | from_json).store.graphRoot | default('/var/lib/containers/storage') }}"
+      - ""
+      - "  Commands:"
+      - "    podman run hello-world    - Test installation"
+      - "    podman ps -a              - List containers"
+      - "    podman images             - List images"
+  when: podman_info.rc == 0

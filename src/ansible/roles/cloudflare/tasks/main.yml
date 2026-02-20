@@ -1,0 +1,123 @@
+---
+# Cloudflare Role for Arch Linux v5.1
+# Manages Cloudflare IP allowlisting for firewall
+
+- name: Create Cloudflare IP update script
+  copy:
+    dest: /usr/local/bin/update-cloudflare-ips
+    mode: '0755'
+    content: |
+      #!/bin/bash
+      # Cloudflare IP List Updater for Arch Linux v5.1
+      # Updates nftables sets with current Cloudflare IP ranges
+      
+      set -euo pipefail
+      
+      IPV4_URL="https://www.cloudflare.com/ips-v4"
+      IPV6_URL="https://www.cloudflare.com/ips-v6"
+      
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] Updating Cloudflare IPs..."
+      
+      # Download IP lists with error handling
+      IPV4_LIST=$(curl -sf "$IPV4_URL" 2>/dev/null || echo "")
+      IPV6_LIST=$(curl -sf "$IPV6_URL" 2>/dev/null || echo "")
+      
+      # Fallback IPs if download fails
+      if [ -z "$IPV4_LIST" ]; then
+        echo "WARNING: Failed to fetch Cloudflare IPv4 list, using fallback"
+        IPV4_LIST="173.245.48.0/20
+      103.21.244.0/22
+      103.22.200.0/22
+      103.31.4.0/22
+      141.101.64.0/18
+      108.162.192.0/18
+      190.93.240.0/20
+      188.114.96.0/20
+      197.234.240.0/22
+      198.41.128.0/17
+      162.158.0.0/15
+      104.16.0.0/13
+      104.24.0.0/14
+      172.64.0.0/13
+      131.0.72.0/22"
+      fi
+      
+      if [ -z "$IPV6_LIST" ]; then
+        echo "WARNING: Failed to fetch Cloudflare IPv6 list, using fallback"
+        IPV6_LIST="2400:cb00::/32
+      2606:4700::/32
+      2803:f800::/32
+      2405:b500::/32
+      2405:8100::/32
+      2a06:98c0::/29
+      2c0f:f248::/32"
+      fi
+      
+      # Check if nftables is running
+      if ! systemctl is-active nftables &>/dev/null; then
+        echo "nftables is not running, skipping dynamic update"
+        exit 0
+      fi
+      
+      # Flush and repopulate sets
+      echo "Updating IPv4 set..."
+      nft flush set inet filter cloudflare_ipv4 2>/dev/null || true
+      while IFS= read -r ip; do
+        [ -n "$ip" ] && nft add element inet filter cloudflare_ipv4 { "$ip" } 2>/dev/null || true
+      done <<< "$IPV4_LIST"
+      
+      echo "Updating IPv6 set..."
+      nft flush set inet filter cloudflare_ipv6 2>/dev/null || true
+      while IFS= read -r ip; do
+        [ -n "$ip" ] && nft add element inet filter cloudflare_ipv6 { "$ip" } 2>/dev/null || true
+      done <<< "$IPV6_LIST"
+      
+      echo "[$(date '+%Y-%m-%d %H:%M:%S')] Cloudflare IPs update complete"
+      echo "IPv4 ranges: $(echo "$IPV4_LIST" | wc -l)"
+      echo "IPv6 ranges: $(echo "$IPV6_LIST" | wc -l)"
+
+- name: Create systemd timer for Cloudflare updates
+  copy:
+    dest: /etc/systemd/system/update-cloudflare-ips.timer
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Update Cloudflare IP ranges weekly
+      
+      [Timer]
+      OnCalendar=weekly
+      Persistent=true
+      RandomizedDelaySec=3600
+      
+      [Install]
+      WantedBy=timers.target
+
+- name: Create systemd service for Cloudflare updates
+  copy:
+    dest: /etc/systemd/system/update-cloudflare-ips.service
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Update Cloudflare IP ranges
+      After=network-online.target nftables.service
+      Wants=network-online.target
+      
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/update-cloudflare-ips
+      StandardOutput=journal
+      StandardError=journal
+
+- name: Enable Cloudflare update timer
+  systemd:
+    name: update-cloudflare-ips.timer
+    enabled: yes
+    state: started
+    daemon_reload: yes
+
+- name: Cloudflare integration complete
+  debug:
+    msg:
+      - "✓ Cloudflare IP integration configured"
+      - "  IPs are updated weekly automatically"
+      - "  Manual update: /usr/local/bin/update-cloudflare-ips"

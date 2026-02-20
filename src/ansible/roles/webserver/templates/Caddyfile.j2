@@ -1,0 +1,68 @@
+# Arch Server - Caddy Configuration
+# Managed by Ansible - do not edit manually
+{
+  admin 127.0.0.1:2019
+{% if domain_email %}
+  email {{ domain_email }}
+{% endif %}
+}
+
+import /etc/caddy/conf.d/*.caddy
+
+{% if domains | default([]) | length > 0 %}
+# Domain-based virtual hosts with automatic HTTPS
+{% for site in domains %}
+{{ site.domain }} {
+  root * {{ site.root | default('/srv/www') }}
+  file_server
+  encode gzip zstd
+
+  header {
+    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "strict-origin-when-cross-origin"
+    -Server
+  }
+
+  log {
+    output file /var/log/caddy/{{ site.domain | replace('.', '_') }}.log {
+      roll_size 50mb
+      roll_keep 5
+    }
+    format json
+  }
+
+  respond /health 200 {
+    body "OK"
+  }
+}
+
+{% endfor %}
+{% else %}
+# No domains configured - serve on port 80 (HTTP only)
+:80 {
+  root * /srv/www
+  file_server
+  encode gzip zstd
+
+  header {
+    X-Content-Type-Options "nosniff"
+    X-Frame-Options "DENY"
+    Referrer-Policy "strict-origin-when-cross-origin"
+    -Server
+  }
+
+  log {
+    output file /var/log/caddy/access.log {
+      roll_size 50mb
+      roll_keep 5
+    }
+    format json
+  }
+
+  respond /health 200 {
+    body "OK"
+  }
+}
+{% endif %}

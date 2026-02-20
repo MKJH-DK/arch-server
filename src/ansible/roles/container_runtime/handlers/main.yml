@@ -1,0 +1,6 @@
+---
+- name: Restart podman socket
+  systemd:
+    name: podman.socket
+    state: restarted
+  failed_when: false

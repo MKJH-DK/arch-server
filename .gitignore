@@ -1,0 +1,53 @@
+# Arch Server - Git Ignore
+
+# ===== Secrets & Credentials =====
+*.pem
+*.key
+*.crt
+*.p12
+.env.local
+.env.*.local
+secrets/
+credentials/
+src/config.env
+
+# SSH Keys
+authorized_keys.pub
+id_*
+id_*.pub
+keys/
+
+# ===== Generated Files =====
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+
+# ===== Ansible =====
+*.retry
+.ansible/
+ansible.log
+
+# ===== IDE & Editors =====
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+
+# ===== OS Files =====
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# ===== Archives & Disk Images =====
+*.tar
+*.tar.gz
+*.tgz
+*.zip
+*.iso
+*.img
+*.qcow2
+*.vmdk

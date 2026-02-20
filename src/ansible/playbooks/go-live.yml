@@ -1,0 +1,133 @@
+---
+# Go Live Playbook - Final production checks
+# Run after site.yml and cloudflare tunnel setup
+
+- name: Go Live - Production Deployment Verification
+  hosts: localhost
+  connection: local
+  gather_facts: yes
+  become: yes
+  
+  vars:
+    domain: "{{ lookup('env', 'DOMAIN') | default('', true) }}"
+  
+  tasks:
+    - name: Display go-live banner
+      debug:
+        msg:
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - "  ARCH LINUX v5.1 - GO LIVE CHECK"
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+    - name: Pre-flight - Check health script exists
+      stat:
+        path: /usr/local/bin/health-check
+      register: health_check_script
+
+    - name: Run health check
+      command: /usr/local/bin/health-check
+      register: health
+      failed_when: false
+      changed_when: false
+      when: health_check_script.stat.exists
+
+    - name: Display health results
+      debug:
+        var: health.stdout_lines
+      when: health.stdout_lines is defined
+
+    - name: Check critical services
+      block:
+        - name: Verify Caddy is running
+          systemd:
+            name: caddy
+            state: started
+          register: caddy_status
+
+        - name: Verify nftables is running
+          systemd:
+            name: nftables
+            state: started
+          register: nftables_status
+
+        - name: Verify SSH is running
+          systemd:
+            name: sshd
+            state: started
+          register: sshd_status
+
+    - name: Check web server response
+      uri:
+        url: http://localhost/
+        return_content: no
+        status_code: 200
+      register: web_check
+      retries: 3
+      delay: 2
+      until: web_check.status == 200
+      failed_when: false
+
+    - name: Check Cloudflare tunnel (if installed)
+      block:
+        - name: Check cloudflared service
+          command: systemctl is-active cloudflared
+          register: cf_status
+          failed_when: false
+          changed_when: false
+
+        - name: Cloudflare tunnel status
+          debug:
+            msg: "Cloudflare tunnel is {{ 'ACTIVE' if cf_status.rc == 0 else 'NOT RUNNING - run setup-cloudflare.sh' }}"
+      when: ansible_facts.services['cloudflared.service'] is defined or true
+
+    - name: Check domain (if configured)
+      block:
+        - name: Verify HTTPS access
+          uri:
+            url: "https://{{ domain }}"
+            validate_certs: yes
+            return_content: no
+          register: https_check
+          failed_when: false
+          when: domain | length > 0
+
+        - name: HTTPS status
+          debug:
+            msg: "HTTPS {{ domain }}: {{ 'OK' if https_check.status is defined and https_check.status == 200 else 'NOT ACCESSIBLE (check DNS/tunnel)' }}"
+          when: domain | length > 0
+      when: domain | length > 0
+
+    - name: Enable production services
+      systemd:
+        name: "{{ item }}"
+        enabled: yes
+        state: started
+      loop:
+        - nftables
+        - caddy
+        - sshd
+      failed_when: false
+
+    - name: Final summary
+      debug:
+        msg:
+          - ""
+          - "╔══════════════════════════════════════════════════════════╗"
+          - "║  🚀 GO LIVE STATUS                                       ║"
+          - "╚══════════════════════════════════════════════════════════╝"
+          - ""
+          - "  Web Server:  {{ 'RUNNING' if web_check.status is defined and web_check.status == 200 else 'CHECK REQUIRED' }}"
+          - "  Firewall:    {{ 'ACTIVE' if nftables_status is succeeded else 'CHECK REQUIRED' }}"
+          - "  SSH:         {{ 'RUNNING' if sshd_status is succeeded else 'CHECK REQUIRED' }}"
+          - "  Cloudflare:  {{ 'ACTIVE' if cf_status is defined and cf_status.rc == 0 else 'NOT CONFIGURED' }}"
+          - ""
+          - "  Local Access:  http://{{ ansible_facts['default_ipv4']['address'] | default('localhost') }}"
+          - "  Domain:        {{ 'https://' + domain if domain else 'Not configured' }}"
+          - ""
+          - "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          - ""
+          - "  Commands:"
+          - "    • Health:  /usr/local/bin/health-check"
+          - "    • Logs:    journalctl -u caddy -f"
+          - "    • Status:  systemctl status caddy nftables"
+          - ""

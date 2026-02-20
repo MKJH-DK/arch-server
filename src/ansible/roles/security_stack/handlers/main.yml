@@ -1,0 +1,23 @@
+---
+- name: Restart nftables
+  systemd:
+    name: nftables
+    state: restarted
+    daemon_reload: yes
+
+- name: Reload nftables
+  command: nft -f /etc/nftables.conf
+  register: nft_reload
+  failed_when: false
+  changed_when: nft_reload.rc == 0
+
+- name: Restart AppArmor
+  systemd:
+    name: apparmor
+    state: restarted
+  failed_when: false
+
+- name: Restart auditd
+  systemd:
+    name: auditd
+    state: restarted

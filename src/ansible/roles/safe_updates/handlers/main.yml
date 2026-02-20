@@ -1,0 +1,12 @@
+---
+- name: Restart snapper-timeline
+  systemd:
+    name: snapper-timeline.timer
+    state: restarted
+  failed_when: false
+
+- name: Restart snapper-cleanup
+  systemd:
+    name: snapper-cleanup.timer
+    state: restarted
+  failed_when: false

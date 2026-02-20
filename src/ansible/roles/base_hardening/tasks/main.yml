@@ -1,0 +1,168 @@
+---
+# Base Hardening for Arch Linux v5.1
+# Optimized for first-run success
+
+- name: Update system packages
+  community.general.pacman:
+    update_cache: yes
+    upgrade: yes
+
+- name: Install essential security packages
+  community.general.pacman:
+    name:
+      - nftables
+      - apparmor
+      - audit
+      - rkhunter
+      - lynis
+    state: present
+
+- name: Check if linux-hardened is installed
+  command: pacman -Q linux-hardened
+  register: hardened_check
+  failed_when: false
+  changed_when: false
+
+- name: Note about hardened kernel
+  debug:
+    msg: "linux-hardened kernel is {{ 'installed' if hardened_check.rc == 0 else 'NOT installed (using default kernel)' }}"
+
+- name: Configure sysctl hardening
+  sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    reload: yes
+    ignoreerrors: yes
+  loop:
+    # Kernel pointer restriction
+    - { key: "kernel.kptr_restrict", value: "2" }
+    # Restrict dmesg
+    - { key: "kernel.dmesg_restrict", value: "1" }
+    # Disable unprivileged BPF
+    - { key: "kernel.unprivileged_bpf_disabled", value: "1" }
+    # Harden BPF JIT
+    - { key: "net.core.bpf_jit_harden", value: "2" }
+    # Restrict ptrace
+    - { key: "kernel.yama.ptrace_scope", value: "2" }
+    # Network hardening
+    - { key: "net.ipv4.conf.all.rp_filter", value: "1" }
+    - { key: "net.ipv4.conf.default.rp_filter", value: "1" }
+    - { key: "net.ipv4.conf.all.accept_redirects", value: "0" }
+    - { key: "net.ipv4.conf.default.accept_redirects", value: "0" }
+    - { key: "net.ipv6.conf.all.accept_redirects", value: "0" }
+    - { key: "net.ipv6.conf.default.accept_redirects", value: "0" }
+    - { key: "net.ipv4.conf.all.send_redirects", value: "0" }
+    - { key: "net.ipv4.conf.default.send_redirects", value: "0" }
+    - { key: "net.ipv4.tcp_syncookies", value: "1" }
+    - { key: "net.ipv4.tcp_rfc1337", value: "1" }
+    # Filesystem protection
+    - { key: "fs.protected_symlinks", value: "1" }
+    - { key: "fs.protected_hardlinks", value: "1" }
+    - { key: "fs.protected_fifos", value: "2" }
+    - { key: "fs.protected_regular", value: "2" }
+    - { key: "fs.suid_dumpable", value: "0" }
+
+- name: Check if SSH service exists
+  stat:
+    path: /etc/ssh/sshd_config
+  register: sshd_config
+
+- name: Harden SSH configuration
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+    create: no
+  loop:
+    - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin prohibit-password' }
+    - { regexp: '^#?MaxAuthTries', line: 'MaxAuthTries 3' }
+    - { regexp: '^#?X11Forwarding', line: 'X11Forwarding no' }
+    - { regexp: '^#?AllowTcpForwarding', line: 'AllowTcpForwarding no' }
+    - { regexp: '^#?ClientAliveCountMax', line: 'ClientAliveCountMax 2' }
+  when: sshd_config.stat.exists
+  notify: Restart sshd
+
+- name: Check if SSH authorized_keys exists
+  stat:
+    path: /home/{{ admin_user | default('admin') }}/.ssh/authorized_keys
+  register: ssh_keys_installed
+
+- name: Configure password authentication based on SSH keys
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PasswordAuthentication'
+    line: "PasswordAuthentication {{ 'no' if ssh_keys_installed.stat.exists else 'yes' }}"
+  when: sshd_config.stat.exists
+  notify: Restart sshd
+
+- name: Enable PubkeyAuthentication
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: '^#?PubkeyAuthentication'
+    line: 'PubkeyAuthentication yes'
+  when: sshd_config.stat.exists
+  notify: Restart sshd
+
+- name: SSH key auth status
+  debug:
+    msg: "SSH key authentication: {{ 'ENABLED (password disabled)' if ssh_keys_installed.stat.exists else 'NOT CONFIGURED (password enabled)' }}"
+
+- name: Disable unused kernel modules
+  copy:
+    dest: /etc/modprobe.d/blacklist-security.conf
+    mode: '0644'
+    content: |
+      # Security blacklist - disable unused/dangerous protocols
+      # Arch Linux v5.1
+      
+      # Disable unused network protocols
+      install dccp /bin/false
+      install sctp /bin/false
+      install rds /bin/false
+      install tipc /bin/false
+      
+      # Disable unused filesystems
+      install cramfs /bin/false
+      install freevxfs /bin/false
+      install jffs2 /bin/false
+      install hfs /bin/false
+      install hfsplus /bin/false
+      install udf /bin/false
+      
+      # Disable firewire (DMA attack vector)
+      install firewire-core /bin/false
+      install firewire-ohci /bin/false
+      install firewire-sbp2 /bin/false
+
+- name: Create security limits directory
+  file:
+    path: /etc/security/limits.d
+    state: directory
+    mode: '0755'
+
+- name: Restrict core dumps
+  copy:
+    dest: /etc/security/limits.d/core.conf
+    mode: '0644'
+    content: |
+      * hard core 0
+      * soft core 0
+
+- name: Disable core dumps via sysctl
+  sysctl:
+    name: kernel.core_pattern
+    value: "|/bin/false"
+    state: present
+    reload: yes
+    ignoreerrors: yes
+
+- name: Install health check script
+  copy:
+    src: health-check
+    dest: /usr/local/bin/health-check
+    mode: '0755'
+
+- name: Base hardening complete
+  debug:
+    msg: "✓ Base hardening applied successfully"
