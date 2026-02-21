@@ -20,9 +20,15 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 recover_service() {
     local service="$1"
     local description="$2"
-    
+
+    # Check if the service unit exists before attempting recovery
+    if ! systemctl list-unit-files "${service}.service" 2>/dev/null | grep -q "${service}"; then
+        warn "⚠ $description is not installed (service unit not found) - skipping recovery"
+        return 1
+    fi
+
     info "Attempting to recover $description..."
-    
+
     # Try to restart the service
     if systemctl restart "$service" 2>/dev/null; then
         sleep 2
@@ -31,7 +37,7 @@ recover_service() {
             return 0
         fi
     fi
-    
+
     # If restart didn't work, try reload/reload-or-restart
     if systemctl reload-or-restart "$service" 2>/dev/null; then
         sleep 2
@@ -40,7 +46,7 @@ recover_service() {
             return 0
         fi
     fi
-    
+
     warn "⚠ Could not recover $description automatically"
     return 1
 }
@@ -118,6 +124,13 @@ log "Phase 2: Running Ansible deployment..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 cd "$ANSIBLE_DIR"
+
+# Fix locale: fresh Arch installs often have LANG set to a locale that hasn't
+# been generated yet, which causes Python/Ansible to abort with
+# "could not initialize the preferred locale: unsupported locale setting".
+# Setting LC_ALL=C forces the C locale, which is always available.
+export LC_ALL=C
+export LANG=C
 
 # Run playbook
 log "Executing site.yml playbook..."
