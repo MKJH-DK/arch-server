@@ -21,11 +21,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
 # Default values
-REMOTE_USER="${1:-root}"
-REMOTE_HOST="${2:-}"
-REMOTE_PATH="${3:-/root/arch}"
+REMOTE_ARG="${1:-}"
+REMOTE_PATH="${2:-/root/arch}"
 
-if [ -z "$REMOTE_HOST" ]; then
+if [ -z "$REMOTE_ARG" ]; then
     echo "Usage: $0 <user@host> [remote_path]"
     echo ""
     echo "Examples:"
@@ -36,9 +35,12 @@ if [ -z "$REMOTE_HOST" ]; then
 fi
 
 # Parse user@host
-if [[ "$REMOTE_USER" == *"@"* ]]; then
-    REMOTE_HOST="${REMOTE_USER#*@}"
-    REMOTE_USER="${REMOTE_USER%@*}"
+if [[ "$REMOTE_ARG" == *"@"* ]]; then
+    REMOTE_USER="${REMOTE_ARG%@*}"
+    REMOTE_HOST="${REMOTE_ARG#*@}"
+else
+    REMOTE_USER="root"
+    REMOTE_HOST="$REMOTE_ARG"
 fi
 
 log "Syncing project to $REMOTE_USER@$REMOTE_HOST:$REMOTE_PATH"
@@ -71,7 +73,7 @@ else
     # Copy and extract
     scp "$TEMP_ARCHIVE" "$REMOTE_USER@$REMOTE_HOST:/tmp/"
     # shellcheck disable=SC2029
-    ssh "$REMOTE_USER@$REMOTE_HOST" "mkdir -p $REMOTE_PATH && cd $REMOTE_PATH && tar -xzf /tmp/arch-server-sync.tar.gz && rm /tmp/arch-server-sync.tar.gz"
+    ssh "$REMOTE_USER@$REMOTE_HOST" "mkdir -p \"$REMOTE_PATH\" && cd \"$REMOTE_PATH\" && tar -xzf /tmp/arch-server-sync.tar.gz && rm /tmp/arch-server-sync.tar.gz"
     
     rm -f "$TEMP_ARCHIVE"
 fi
