@@ -85,7 +85,7 @@ log "✓ Logged in successfully"
 log ""
 log "Step 3: Creating tunnel..."
 
-TUNNEL_NAME="archserver-$(hostname)"
+TUNNEL_NAME="archserver-$(uname -n)"
 
 # Check if tunnel exists
 if cloudflared tunnel list | grep -q "$TUNNEL_NAME"; then
