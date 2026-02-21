@@ -52,8 +52,27 @@ fi
 # Enroll keys
 log "Enrolling keys to firmware..."
 
-# EFI variables are often marked immutable - remove the flag before enrolling
+# Check Setup Mode
+SETUP_MODE=$(sbctl status 2>&1 | grep -i "setup mode" | grep -c -i "enabled" || true)
+if [[ "$SETUP_MODE" -eq 0 ]]; then
+    error "Secure Boot is NOT in Setup Mode!
+  → Reboot into UEFI firmware setup (Del/F2 at POST)
+  → Find 'Secure Boot' → 'Delete/Clear all Secure Boot keys' (or 'Reset to Setup Mode')
+  → Save and reboot back to Arch, then re-run this script"
+fi
+
+# Ensure efivarfs is mounted read-write
 EFIVAR_DIR="/sys/firmware/efi/efivars"
+if mountpoint -q "$EFIVAR_DIR"; then
+    if mount | grep -q "efivarfs.*ro"; then
+        log "Remounting efivarfs read-write..."
+        mount -o remount,rw "$EFIVAR_DIR" || warn "Could not remount efivarfs rw - enrollment may fail"
+    fi
+else
+    error "efivarfs is not mounted at $EFIVAR_DIR - are you in UEFI mode?"
+fi
+
+# EFI variables are often marked immutable - remove the flag before enrolling
 for var in PK-8be4df61-93ca-11d2-aa0d-00e098032b8c \
            KEK-8be4df61-93ca-11d2-aa0d-00e098032b8c \
            db-d719b2cb-3d3a-4596-a3bc-dad00e67656f; do
