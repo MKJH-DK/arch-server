@@ -191,8 +191,8 @@ else
     for service in apparmor auditd; do
         if systemctl is-active "$service" &>/dev/null; then
             log "✓ $service service is running"
-        elif [[ "$service" == "apparmor" ]] && systemctl status apparmor 2>&1 | grep -q "ConditionSecurity=apparmor"; then
-            warn "⚠ AppArmor requires kernel parameter 'lsm=...apparmor...' in /etc/kernel/cmdline — reboot after adding it"
+        elif [[ "$service" == "apparmor" ]] && systemctl show -p ConditionResult apparmor 2>/dev/null | grep -q "no"; then
+            warn "⚠ AppArmor: kernel LSM parameter not set — reboot required for 'lsm=...apparmor...' to take effect"
         else
             warn "⚠ $service service is not running"
             systemctl status "$service" --no-pager -l || true
