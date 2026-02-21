@@ -57,7 +57,7 @@ warn_check "systemctl is-active snapper-cleanup.timer" "Snapper cleanup"
 echo ""
 
 echo -e "${BLUE}[NETWORK]${NC}"
-check "ss -tlnp | grep -q ':80 '" "Port 80 listening"
+check "ss -tlnp | grep -q ':80'" "Port 80 listening"
 check "curl -sf -o /dev/null http://localhost/" "Web server responding"
 check "ping -c 1 -W 2 1.1.1.1" "Internet connectivity"
 echo ""

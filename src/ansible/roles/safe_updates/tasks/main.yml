@@ -68,7 +68,7 @@
   failed_when: false
 
 - name: Create initial deployment snapshot
-  command: snapper -c root create --description "Ansible deployment - {{ ansible_date_time.iso8601 }}"
+  command: snapper -c root create --description "Ansible deployment - {{ now(utc=true, fmt='%Y-%m-%dT%H:%M:%SZ') }}"
   register: snapshot_create
   changed_when: true
   failed_when: false

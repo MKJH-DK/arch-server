@@ -188,6 +188,19 @@
     name: apparmor
     state: present
 
+- name: Configure AppArmor kernel parameters
+  lineinfile:
+    path: /etc/kernel/cmdline
+    line: "lsm=landlock,lockdown,yama,integrity,apparmor,bpf"
+    regexp: "^lsm="
+    create: yes
+    mode: '0644'
+  register: kernel_cmdline_changed
+
+- name: Regenerate UKI after kernel cmdline change
+  command: mkinitcpio -P
+  when: kernel_cmdline_changed.changed
+
 - name: Enable AppArmor service
   systemd:
     name: apparmor
@@ -195,16 +208,10 @@
     state: started
   failed_when: false
 
-- name: Note about AppArmor kernel parameters
+- name: Notify reboot required for AppArmor
   debug:
-    msg:
-      - "AppArmor enabled as systemd service."
-      - "For full enforcement, add to kernel cmdline:"
-      - "  lsm=landlock,lockdown,yama,integrity,apparmor,bpf"
-      - ""
-      - "Since we use systemd-boot (not GRUB), edit:"
-      - "  /etc/kernel/cmdline"
-      - "Then regenerate UKI: mkinitcpio -P"
+    msg: "REBOOT REQUIRED: AppArmor kernel parameters have been set. Run 'reboot' to activate AppArmor."
+  when: kernel_cmdline_changed.changed
 
 # ============================================
 # AUDITD

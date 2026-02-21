@@ -85,12 +85,19 @@ log "✓ Logged in successfully"
 log ""
 log "Step 3: Creating tunnel..."
 
-TUNNEL_NAME="archserver-$(hostname)"
+TUNNEL_NAME="archserver-$(uname -n)"
 
 # Check if tunnel exists
 if cloudflared tunnel list | grep -q "$TUNNEL_NAME"; then
     warn "Tunnel '$TUNNEL_NAME' already exists"
     TUNNEL_ID=$(cloudflared tunnel list | grep "$TUNNEL_NAME" | awk '{print $1}')
+    # Check if credentials file exists - if not, recreate tunnel
+    if [ ! -f "/root/.cloudflared/${TUNNEL_ID}.json" ]; then
+        warn "Credentials file missing for existing tunnel - deleting and recreating..."
+        cloudflared tunnel delete "$TUNNEL_ID"
+        cloudflared tunnel create "$TUNNEL_NAME"
+        TUNNEL_ID=$(cloudflared tunnel list | grep "$TUNNEL_NAME" | awk '{print $1}')
+    fi
 else
     cloudflared tunnel create "$TUNNEL_NAME"
     TUNNEL_ID=$(cloudflared tunnel list | grep "$TUNNEL_NAME" | awk '{print $1}')
@@ -135,8 +142,15 @@ if [ ${#DOMAINS[@]} -eq 0 ]; then
         if [ -z "$input_domain" ]; then
             break
         fi
-        DOMAINS+=("$input_domain")
-        log "  Added: $input_domain"
+        # Split by comma to support multiple domains on one line
+        IFS=',' read -ra input_parts <<< "$input_domain"
+        for part in "${input_parts[@]}"; do
+            part=$(echo "$part" | xargs)  # trim whitespace
+            if [ -n "$part" ]; then
+                DOMAINS+=("$part")
+                log "  Added: $part"
+            fi
+        done
     done
 fi
 
@@ -186,7 +200,7 @@ if [ ${#DOMAINS[@]} -gt 0 ]; then
     for domain in "${DOMAINS[@]}"; do
         domain=$(echo "$domain" | xargs)
         if [ -n "$domain" ]; then
-            if cloudflared tunnel route dns "$TUNNEL_NAME" "$domain" 2>/dev/null; then
+            if cloudflared tunnel route dns --overwrite-dns "$TUNNEL_NAME" "$domain" 2>/dev/null; then
                 log "  ✓ DNS routed: $domain → $TUNNEL_NAME"
             else
                 warn "  DNS routing failed for $domain - configure manually in Cloudflare dashboard"

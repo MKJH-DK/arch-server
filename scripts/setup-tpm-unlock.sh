@@ -47,10 +47,13 @@ if command -v sbctl &>/dev/null; then
     if sbctl status 2>/dev/null | grep -qi "secure boot.*enabled"; then
         SB_ENABLED=true
     fi
-elif [[ -f /sys/firmware/efi/efivars/SecureBoot-* ]] 2>/dev/null; then
-    SB_STATE=$(od -An -t u1 /sys/firmware/efi/efivars/SecureBoot-* 2>/dev/null | awk '{print $NF}')
-    if [[ "$SB_STATE" == "1" ]]; then
-        SB_ENABLED=true
+else
+    SB_FILE=$(compgen -G "/sys/firmware/efi/efivars/SecureBoot-*" 2>/dev/null | head -1)
+    if [[ -n "$SB_FILE" && -f "$SB_FILE" ]]; then
+        SB_STATE=$(od -An -t u1 "$SB_FILE" 2>/dev/null | awk '{print $NF}')
+        if [[ "$SB_STATE" == "1" ]]; then
+            SB_ENABLED=true
+        fi
     fi
 fi
 
@@ -90,7 +93,7 @@ if cryptsetup luksDump "$LUKS_DEV" | grep -q "systemd-tpm2"; then
 fi
 
 # Generate PIN if not set
-TPM_PIN="${TPM_PIN:-$(head -c 3 /dev/urandom | od -An -tu2 | tr -d ' ')}"
+TPM_PIN="${TPM_PIN:-$(od -An -tu4 -N4 /dev/urandom | tr -d ' \n' | cut -c1-6)}"
 
 log "TPM PIN will be: $TPM_PIN"
 log "SAVE THIS PIN SECURELY!"
