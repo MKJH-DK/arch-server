@@ -91,6 +91,13 @@ TUNNEL_NAME="archserver-$(uname -n)"
 if cloudflared tunnel list | grep -q "$TUNNEL_NAME"; then
     warn "Tunnel '$TUNNEL_NAME' already exists"
     TUNNEL_ID=$(cloudflared tunnel list | grep "$TUNNEL_NAME" | awk '{print $1}')
+    # Check if credentials file exists - if not, recreate tunnel
+    if [ ! -f "/root/.cloudflared/${TUNNEL_ID}.json" ]; then
+        warn "Credentials file missing for existing tunnel - deleting and recreating..."
+        cloudflared tunnel delete "$TUNNEL_ID"
+        cloudflared tunnel create "$TUNNEL_NAME"
+        TUNNEL_ID=$(cloudflared tunnel list | grep "$TUNNEL_NAME" | awk '{print $1}')
+    fi
 else
     cloudflared tunnel create "$TUNNEL_NAME"
     TUNNEL_ID=$(cloudflared tunnel list | grep "$TUNNEL_NAME" | awk '{print $1}')
@@ -193,7 +200,7 @@ if [ ${#DOMAINS[@]} -gt 0 ]; then
     for domain in "${DOMAINS[@]}"; do
         domain=$(echo "$domain" | xargs)
         if [ -n "$domain" ]; then
-            if cloudflared tunnel route dns "$TUNNEL_NAME" "$domain" 2>/dev/null; then
+            if cloudflared tunnel route dns --overwrite-dns "$TUNNEL_NAME" "$domain" 2>/dev/null; then
                 log "  ✓ DNS routed: $domain → $TUNNEL_NAME"
             else
                 warn "  DNS routing failed for $domain - configure manually in Cloudflare dashboard"
