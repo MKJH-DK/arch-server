@@ -51,6 +51,19 @@ fi
 
 # Enroll keys
 log "Enrolling keys to firmware..."
+
+# EFI variables are often marked immutable - remove the flag before enrolling
+EFIVAR_DIR="/sys/firmware/efi/efivars"
+for var in PK-8be4df61-93ca-11d2-aa0d-00e098032b8c \
+           KEK-8be4df61-93ca-11d2-aa0d-00e098032b8c \
+           db-d719b2cb-3d3a-4596-a3bc-dad00e67656f; do
+    if [[ -f "$EFIVAR_DIR/$var" ]]; then
+        chattr -i "$EFIVAR_DIR/$var" 2>/dev/null && \
+            log "Removed immutable flag: $var" || \
+            warn "Could not remove immutable flag on $var (may be ok)"
+    fi
+done
+
 sbctl enroll-keys --microsoft
 
 success "Keys enrolled"
