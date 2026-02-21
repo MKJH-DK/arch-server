@@ -127,10 +127,11 @@ cd "$ANSIBLE_DIR"
 
 # Fix locale: fresh Arch installs often have LANG set to a locale that hasn't
 # been generated yet, which causes Python/Ansible to abort with
-# "could not initialize the preferred locale: unsupported locale setting".
-# Setting LC_ALL=C forces the C locale, which is always available.
-export LC_ALL=C
-export LANG=C
+# "could not initialize the preferred locale" or "locale encoding must be UTF-8".
+# C.UTF-8 is a built-in glibc locale (no locale-gen required) that satisfies
+# Ansible's UTF-8 encoding requirement on any system with glibc >= 2.26.
+export LC_ALL=C.UTF-8
+export LANG=C.UTF-8
 
 # Run playbook
 log "Executing site.yml playbook..."
