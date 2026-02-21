@@ -135,8 +135,15 @@ if [ ${#DOMAINS[@]} -eq 0 ]; then
         if [ -z "$input_domain" ]; then
             break
         fi
-        DOMAINS+=("$input_domain")
-        log "  Added: $input_domain"
+        # Split by comma to support multiple domains on one line
+        IFS=',' read -ra input_parts <<< "$input_domain"
+        for part in "${input_parts[@]}"; do
+            part=$(echo "$part" | xargs)  # trim whitespace
+            if [ -n "$part" ]; then
+                DOMAINS+=("$part")
+                log "  Added: $part"
+            fi
+        done
     done
 fi
 
