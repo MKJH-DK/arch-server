@@ -58,15 +58,23 @@ success "Keys enrolled"
 # Sign bootloader and kernel
 log "Signing bootloader and kernels..."
 
-sbctl sign -s /boot/EFI/BOOT/BOOTX64.EFI
-sbctl sign -s /boot/EFI/systemd/systemd-bootx64.efi
+# Find ESP mount point dynamically
+ESP_PATH=$(bootctl --print-esp-path 2>/dev/null || findmnt -n -o TARGET --target /boot/efi 2>/dev/null || findmnt -n -o TARGET --target /boot 2>/dev/null || echo "/boot")
+log "ESP detected at: $ESP_PATH"
 
-for kernel in /boot/EFI/Linux/*.efi; do
-    if [[ -f "$kernel" ]]; then
-        sbctl sign -s "$kernel"
-        success "Signed: $(basename "$kernel")"
-    fi
-done
+# Register and sign all EFI binaries found on the ESP
+SIGNED_COUNT=0
+
+while IFS= read -r efi_file; do
+    sbctl sign -s "$efi_file" && \
+        success "Signed: ${efi_file#"$ESP_PATH"/}" || \
+        warn "Could not sign: ${efi_file#"$ESP_PATH"/}"
+    SIGNED_COUNT=$((SIGNED_COUNT + 1))
+done < <(find "$ESP_PATH" \( -name "*.efi" -o -name "*.EFI" \) 2>/dev/null)
+
+if [[ $SIGNED_COUNT -eq 0 ]]; then
+    warn "No EFI binaries found under $ESP_PATH - run 'bootctl install' first if systemd-boot is not installed"
+fi
 
 # Enable auto-signing hook
 log "Setting up automatic signing..."
