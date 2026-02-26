@@ -78,7 +78,9 @@ if [[ "$SB_ENABLED" != "true" ]]; then
 fi
 
 # Find LUKS device
-LUKS_DEV=$(lsblk -o NAME,FSTYPE | grep crypto_LUKS | awk '{print "/dev/" $1}' | head -1)
+# Use -rno (raw output) to avoid Unicode tree characters (e.g. └─) that appear
+# in the NAME column of the default tree view and corrupt the device path.
+LUKS_DEV=$(lsblk -rno NAME,FSTYPE | grep crypto_LUKS | awk '{print "/dev/" $1}' | head -1)
 
 if [[ -z "$LUKS_DEV" ]]; then
     error "No LUKS device found!"

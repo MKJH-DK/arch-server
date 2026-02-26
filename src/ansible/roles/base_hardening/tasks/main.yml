@@ -68,6 +68,14 @@
     path: /etc/ssh/sshd_config
   register: sshd_config
 
+- name: Check if root SSH authorized_keys exists and has content (pre-hardening)
+  shell: |
+    f="/root/.ssh/authorized_keys"
+    [ -f "$f" ] && grep -qvE '^\s*$|^#' "$f"
+  register: root_has_ssh_keys_pre
+  failed_when: false
+  changed_when: false
+
 - name: Harden SSH configuration
   lineinfile:
     path: /etc/ssh/sshd_config
@@ -75,7 +83,7 @@
     line: "{{ item.line }}"
     create: no
   loop:
-    - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin prohibit-password' }
+    - { regexp: '^#?PermitRootLogin', line: "PermitRootLogin {{ 'prohibit-password' if root_has_ssh_keys_pre.rc == 0 else 'yes' }}" }
     - { regexp: '^#?MaxAuthTries', line: 'MaxAuthTries 3' }
     - { regexp: '^#?X11Forwarding', line: 'X11Forwarding no' }
     - { regexp: '^#?AllowTcpForwarding', line: 'AllowTcpForwarding no' }
@@ -83,16 +91,46 @@
   when: sshd_config.stat.exists
   notify: Restart sshd
 
-- name: Check if SSH authorized_keys exists
-  stat:
-    path: /home/{{ admin_user | default('admin') }}/.ssh/authorized_keys
-  register: ssh_keys_installed
+- name: Warn if PermitRootLogin kept as yes due to missing root SSH keys
+  debug:
+    msg: >
+      NOTE: PermitRootLogin left as 'yes' because /root/.ssh/authorized_keys has no keys.
+      Add a root SSH key and re-run to restrict to key-only login.
+  when: sshd_config.stat.exists and root_has_ssh_keys_pre.rc != 0
+
+- name: Check if admin user SSH authorized_keys exists and has content
+  shell: |
+    f="/home/{{ admin_user | default('admin') }}/.ssh/authorized_keys"
+    [ -f "$f" ] && grep -qvE '^\s*$|^#' "$f"
+  register: admin_ssh_keys_installed
+  failed_when: false
+  changed_when: false
+
+- name: Check if root SSH authorized_keys exists and has content
+  shell: |
+    f="/root/.ssh/authorized_keys"
+    [ -f "$f" ] && grep -qvE '^\s*$|^#' "$f"
+  register: root_ssh_keys_installed
+  failed_when: false
+  changed_when: false
+
+- name: Set fact - SSH keys are available
+  set_fact:
+    ssh_keys_installed: "{{ admin_ssh_keys_installed.rc == 0 or root_ssh_keys_installed.rc == 0 }}"
+
+- name: Warn if no SSH keys found before disabling password auth
+  debug:
+    msg: >
+      WARNING: No SSH authorized_keys found for root or {{ admin_user | default('admin') }}.
+      Keeping PasswordAuthentication=yes to prevent lockout.
+      Add SSH keys and re-run to harden further.
+  when: not ssh_keys_installed
 
 - name: Configure password authentication based on SSH keys
   lineinfile:
     path: /etc/ssh/sshd_config
     regexp: '^#?PasswordAuthentication'
-    line: "PasswordAuthentication {{ 'no' if ssh_keys_installed.stat.exists else 'yes' }}"
+    line: "PasswordAuthentication {{ 'no' if ssh_keys_installed else 'yes' }}"
   when: sshd_config.stat.exists
   notify: Restart sshd
 
