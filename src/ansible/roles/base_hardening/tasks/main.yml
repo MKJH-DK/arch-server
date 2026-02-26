@@ -163,6 +163,180 @@
     dest: /usr/local/bin/health-check
     mode: '0755'
 
+# ============================================
+# ASLR ENTROPY BOOST
+# ============================================
+
+- name: Increase mmap ASLR entropy (Tier 1)
+  sysctl:
+    name: vm.mmap_rnd_bits
+    value: "32"
+    state: present
+    reload: yes
+    ignoreerrors: yes
+
+# ============================================
+# DNS-OVER-TLS via systemd-resolved (Tier 1)
+# ============================================
+
+- name: Create systemd-resolved config directory
+  file:
+    path: /etc/systemd/resolved.conf.d
+    state: directory
+    mode: '0755'
+
+- name: Configure DNS-over-TLS with DNSSEC (disable LLMNR/mDNS)
+  copy:
+    dest: /etc/systemd/resolved.conf.d/dns-tls.conf
+    mode: '0644'
+    content: |
+      # DNS-over-TLS - Arch Server v5.2
+      # Encrypts DNS queries; disables LLMNR/mDNS (common lateral-movement vectors)
+      [Resolve]
+      DNS=1.1.1.1#cloudflare-dns.com 1.0.0.1#cloudflare-dns.com
+      FallbackDNS=9.9.9.9#dns.quad9.net 149.112.112.112#dns.quad9.net
+      DNSOverTLS=yes
+      DNSSEC=yes
+      LLMNR=no
+      MulticastDNS=no
+  notify: Restart systemd-resolved
+
+- name: Enable systemd-resolved
+  systemd:
+    name: systemd-resolved
+    enabled: yes
+    state: started
+
+- name: Point /etc/resolv.conf to systemd-resolved stub resolver
+  file:
+    src: /run/systemd/resolve/stub-resolv.conf
+    dest: /etc/resolv.conf
+    state: link
+    force: yes
+
+# ============================================
+# ARCH-AUDIT VULNERABILITY SCANNER (Tier 2)
+# ============================================
+
+- name: Install arch-audit
+  community.general.pacman:
+    name: arch-audit
+    state: present
+
+- name: Deploy arch-audit systemd service unit
+  copy:
+    dest: /etc/systemd/system/arch-audit.service
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Arch Linux Package Vulnerability Audit
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/bin/arch-audit --quiet
+      StandardOutput=journal
+      StandardError=journal
+
+- name: Deploy arch-audit systemd timer (weekly)
+  copy:
+    dest: /etc/systemd/system/arch-audit.timer
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Weekly Arch Linux Package Vulnerability Audit
+
+      [Timer]
+      OnCalendar=weekly
+      Persistent=true
+      RandomizedDelaySec=1h
+
+      [Install]
+      WantedBy=timers.target
+
+- name: Enable arch-audit weekly timer
+  systemd:
+    name: arch-audit.timer
+    enabled: yes
+    state: started
+    daemon_reload: yes
+
+# ============================================
+# WIFI AUTO-DISABLE + PMF (Tier 2)
+# ============================================
+
+- name: Check if NetworkManager is installed
+  command: pacman -Q networkmanager
+  register: nm_check
+  failed_when: false
+  changed_when: false
+
+- name: Create NetworkManager dispatcher directory
+  file:
+    path: /etc/NetworkManager/dispatcher.d
+    state: directory
+    mode: '0755'
+  when: nm_check.rc == 0
+
+- name: Deploy WiFi auto-disable dispatcher script
+  copy:
+    dest: /etc/NetworkManager/dispatcher.d/99-wifi-disable
+    mode: '0755'
+    content: |
+      #!/bin/bash
+      # Auto-disable WiFi when Ethernet is connected (Arch Server v5.2)
+      # Reduces attack surface: only one active network interface at a time
+      IFACE="$1"
+      ACTION="$2"
+
+      # Only act on Ethernet/wired interfaces
+      [[ "$IFACE" =~ ^(eth|en) ]] || exit 0
+
+      case "$ACTION" in
+        up)
+          nmcli radio wifi off
+          logger -t arch-server "WiFi disabled: Ethernet $IFACE connected"
+          ;;
+        down)
+          nmcli radio wifi on
+          logger -t arch-server "WiFi enabled: Ethernet $IFACE disconnected"
+          ;;
+      esac
+  when: nm_check.rc == 0
+
+- name: Note about WiFi PMF (Protected Management Frames)
+  debug:
+    msg:
+      - "WiFi PMF (ieee80211w=2): set manually per connection:"
+      - "  nmcli connection modify <SSID> 802-11-wireless-security.pmf 3"
+      - "This cryptographically protects against deauth attacks."
+  when: nm_check.rc == 0
+
+# ============================================
+# LINUX-HARDENED KERNEL (Tier 3, opt-in)
+# ============================================
+
+- name: Install linux-hardened kernel (optional)
+  community.general.pacman:
+    name:
+      - linux-hardened
+      - linux-hardened-headers
+    state: present
+  when: install_hardened_kernel | default(false) | bool
+  notify: Regenerate initramfs
+
+- name: Note about linux-hardened kernel
+  debug:
+    msg:
+      - "linux-hardened kernel: NOT installed (standard kernel active)"
+      - "To enable: set 'install_hardened_kernel: true' in playbook vars"
+      - "Benefits: more ASLR entropy, init_on_alloc/free, no kexec, restricted pointers"
+      - "Standard kernel is kept as fallback boot entry automatically"
+  when: not (install_hardened_kernel | default(false) | bool)
+
+# ============================================
+
 - name: Base hardening complete
   debug:
-    msg: "✓ Base hardening applied successfully"
+    msg: "✓ Base hardening applied (v5.2: +DoT, +arch-audit, +WiFi dispatcher, +ASLR)"

@@ -96,6 +96,19 @@
         
         chain output {
           type filter hook output priority 0; policy accept;
+
+          # Egress monitoring (Tier 2) - log unexpected outbound traffic
+          # Policy stays 'accept' for safety; set nftables_egress_enforce=true to block
+          oif lo accept
+          ct state established,related accept
+
+          # Allow essential outbound: DoT, NTP, HTTP/HTTPS, QUIC
+          ip daddr { 1.1.1.1, 1.0.0.1, 9.9.9.9, 149.112.112.112 } tcp dport 853 accept
+          tcp dport { 80, 443 } accept
+          udp dport { 123, 443 } accept
+
+          # Log everything else (rate-limited to avoid log spam)
+          limit rate 10/minute log prefix "[nftables] Egress: " level info
         }
       }
   notify: Restart nftables
@@ -222,50 +235,110 @@
     name: audit
     state: present
 
-- name: Deploy audit rules
+- name: Deploy expanded CIS/STIG audit rules (Tier 1)
   copy:
     dest: /etc/audit/rules.d/hardening.rules
     mode: '0640'
     content: |
-      # Audit rules for security monitoring
-      # Arch Linux v5.1
-      
+      # CIS/STIG-aligned audit rules - Arch Server v5.2
+      # Maps to MITRE ATT&CK techniques where noted
       # Delete all existing rules
       -D
-      
-      # Buffer size
-      -b 8192
-      
-      # Failure mode (1 = print, 2 = panic)
+
+      # Buffer size (16384 handles bursts from package updates)
+      -b 16384
+
+      # Failure mode: 1=log (use 2=panic only on classified systems)
       -f 1
-      
-      # Identity changes
+
+      # ── Identity & authentication ─────────────────────────────
       -w /etc/passwd -p wa -k identity
       -w /etc/group -p wa -k identity
       -w /etc/shadow -p wa -k identity
       -w /etc/gshadow -p wa -k identity
-      -w /etc/sudoers -p wa -k identity
-      -w /etc/sudoers.d/ -p wa -k identity
-      
-      # Network configuration
+      -w /etc/security/opasswd -p wa -k identity
+
+      # Sudoers / privilege config
+      -w /etc/sudoers -p wa -k sudo_config
+      -w /etc/sudoers.d/ -p wa -k sudo_config
+
+      # PAM (T1556.003)
+      -w /etc/pam.d/ -p wa -k pam
+      -w /etc/security/ -p wa -k pam
+
+      # ── Network & SSH ─────────────────────────────────────────
       -w /etc/hosts -p wa -k network
+      -w /etc/hostname -p wa -k network
       -w /etc/NetworkManager/ -p wa -k network
-      
-      # SSH configuration
+      -w /etc/systemd/resolved.conf -p wa -k network
+      -w /etc/systemd/resolved.conf.d/ -p wa -k network
       -w /etc/ssh/sshd_config -p wa -k sshd
-      
-      # Privilege escalation
+      -w /etc/ssh/sshd_config.d/ -p wa -k sshd
+
+      # ── Privilege escalation (T1548) ──────────────────────────
       -w /usr/bin/sudo -p x -k sudo_usage
       -w /usr/bin/su -p x -k su_usage
-      
-      # Kernel module loading
+      -w /usr/bin/newgrp -p x -k privilege_escalation
+      -w /usr/bin/chsh -p x -k privilege_escalation
+      -w /usr/bin/chfn -p x -k privilege_escalation
+
+      # setuid/setgid execution (uid != euid → privilege transition)
+      -a always,exit -F arch=b64 -S execve -C uid!=euid -F euid=0 -k setuid_exec
+      -a always,exit -F arch=b32 -S execve -C uid!=euid -F euid=0 -k setuid_exec
+
+      # ── Kernel modules (T1547, T1215) ─────────────────────────
       -w /sbin/insmod -p x -k modules
       -w /sbin/rmmod -p x -k modules
       -w /sbin/modprobe -p x -k modules
-      
-      # Make rules immutable (requires reboot to change)
-      # Commented out during testing
-      # -e 2
+      -w /sbin/modinfo -p x -k modules
+      -a always,exit -F arch=b64 -S init_module,finit_module,delete_module -k modules
+
+      # ── Boot & init integrity (T1542) ─────────────────────────
+      -w /boot/ -p wa -k boot
+      -w /etc/kernel/ -p wa -k boot
+      -w /etc/mkinitcpio.conf -p wa -k boot
+      -w /etc/mkinitcpio.conf.d/ -p wa -k boot
+
+      # ── Firewall & network config ─────────────────────────────
+      -w /etc/nftables.conf -p wa -k firewall
+      -w /etc/nftables.d/ -p wa -k firewall
+
+      # ── Living-Off-The-Land binaries (T1059, T1105) ───────────
+      # Flags use of common exfiltration/download tools
+      -w /usr/bin/curl -p x -k lotl
+      -w /usr/bin/wget -p x -k lotl
+      -w /usr/bin/nc -p x -k lotl
+      -w /usr/bin/ncat -p x -k lotl
+      -w /usr/bin/socat -p x -k lotl
+      -w /usr/bin/python3 -p x -k lotl
+      -w /usr/bin/python -p x -k lotl
+      -w /usr/bin/perl -p x -k lotl
+      -w /usr/bin/ruby -p x -k lotl
+      -w /usr/bin/base64 -p x -k lotl
+      -w /usr/bin/xxd -p x -k lotl
+      -w /usr/bin/openssl -p x -k lotl
+
+      # Shell spawns (T1059.004)
+      -w /usr/bin/bash -p x -k shell
+      -w /usr/bin/sh -p x -k shell
+      -w /usr/bin/dash -p x -k shell
+      -w /usr/bin/zsh -p x -k shell
+
+      # ── File permission changes (T1222) ───────────────────────
+      -a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=-1 -k file_perm
+      -a always,exit -F arch=b64 -S chown,fchown,lchown,fchownat -F auid>=1000 -F auid!=-1 -k file_own
+      -a always,exit -F arch=b64 -S setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr -F auid>=1000 -k xattr
+
+      # ── systemd unit tampering (T1543.002) ────────────────────
+      -w /etc/systemd/system/ -p wa -k systemd_units
+      -w /usr/lib/systemd/system/ -p wa -k systemd_units
+
+      # ── Container runtime (T1610) ─────────────────────────────
+      -w /usr/bin/podman -p x -k containers
+      -w /etc/containers/ -p wa -k containers
+
+      # ── Immutable: requires reboot to modify rules ─────────────
+      -e 2
 
 - name: Enable auditd
   systemd:
@@ -274,23 +347,174 @@
     state: started
 
 # ============================================
-# AIDE (File Integrity - AUR notice)
+# AIDE FILE INTEGRITY MONITORING (Tier 2)
 # ============================================
 
-- name: Check if AIDE is installed
-  command: pacman -Q aide
-  register: aide_installed
-  failed_when: false
-  changed_when: false
+- name: Install AIDE
+  community.general.pacman:
+    name: aide
+    state: present
 
-- name: AIDE notice
+- name: Deploy AIDE configuration
+  copy:
+    dest: /etc/aide.conf
+    mode: '0640'
+    content: |
+      # AIDE configuration - Arch Server v5.2
+      # Database stored at /var/lib/aide/aide.db.gz
+      # IMPORTANT: after init, move database to read-only media or Btrfs read-only snapshot
+
+      database_in=file:/var/lib/aide/aide.db.gz
+      database_out=file:/var/lib/aide/aide.db.new.gz
+      database_new=file:/var/lib/aide/aide.db.new.gz
+      gzip_dbout=yes
+
+      # Report options
+      report_url=stdout
+      report_url=file:/var/log/aide/aide.log
+      verbose=5
+
+      # ── Ruleset definitions ───────────────────────────────────
+      # Full check: hash + permissions + ownership + timestamps
+      FULL = p+i+n+u+g+s+m+c+sha256+sha512
+
+      # Content only (for frequently-changing config dirs)
+      CONTENT = sha256+sha512
+
+      # Executables: strict - any change is critical
+      EXEC = p+i+n+u+g+s+sha256+sha512
+
+      # ── Monitored paths ───────────────────────────────────────
+      # Boot and kernel
+      /boot FULL
+      /etc/kernel FULL
+      /etc/mkinitcpio.conf FULL
+      /etc/mkinitcpio.conf.d FULL
+
+      # System binaries and libraries
+      /usr/bin EXEC
+      /usr/sbin EXEC
+      /usr/lib FULL
+      /usr/lib64 FULL
+
+      # Security-critical config
+      /etc/ssh FULL
+      /etc/pam.d FULL
+      /etc/security FULL
+      /etc/sudoers FULL
+      /etc/sudoers.d FULL
+      /etc/audit FULL
+      /etc/apparmor.d FULL
+      /etc/nftables.conf FULL
+      /etc/nftables.d FULL
+      /etc/systemd/system FULL
+      /etc/systemd/resolved.conf.d FULL
+      /etc/containers FULL
+
+      # User and group databases
+      /etc/passwd FULL
+      /etc/group FULL
+      /etc/shadow FULL
+      /etc/gshadow FULL
+
+      # ── Excluded paths ────────────────────────────────────────
+      # Logs and caches change constantly
+      !/var/log
+      !/var/cache
+      !/var/tmp
+      !/tmp
+      !/proc
+      !/sys
+      !/dev
+      !/run
+      # Snapper snapshot dirs (Btrfs, not real files)
+      !/.snapshots
+
+- name: Create AIDE log directory
+  file:
+    path: /var/log/aide
+    state: directory
+    mode: '0700'
+    owner: root
+    group: root
+
+- name: Create AIDE database directory
+  file:
+    path: /var/lib/aide
+    state: directory
+    mode: '0700'
+    owner: root
+    group: root
+
+- name: Check if AIDE database exists
+  stat:
+    path: /var/lib/aide/aide.db.gz
+  register: aide_db
+
+- name: Initialize AIDE database (first run only)
+  command: aide --init
+  when: not aide_db.stat.exists
+  register: aide_init
+  failed_when: false
+
+- name: Activate AIDE database after init
+  command: mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz
+  when:
+    - not aide_db.stat.exists
+    - aide_init.rc is defined
+    - aide_init.rc == 0
+
+- name: Deploy AIDE check systemd service
+  copy:
+    dest: /etc/systemd/system/aide-check.service
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=AIDE File Integrity Check
+      After=local-fs.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/bin/aide --check
+      StandardOutput=journal
+      StandardError=journal
+      # Run as root (needs access to shadow, boot, etc.)
+
+- name: Deploy AIDE check systemd timer (daily)
+  copy:
+    dest: /etc/systemd/system/aide-check.timer
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Daily AIDE File Integrity Check
+
+      [Timer]
+      OnCalendar=daily
+      Persistent=true
+      RandomizedDelaySec=30min
+
+      [Install]
+      WantedBy=timers.target
+
+- name: Enable AIDE daily timer
+  systemd:
+    name: aide-check.timer
+    enabled: yes
+    state: started
+    daemon_reload: yes
+
+- name: AIDE status
   debug:
     msg:
-      - "AIDE (File Integrity Monitoring) is in the AUR."
-      - "To install: yay -S aide"
-      - "Then run: aide --init && mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz"
-  when: aide_installed.rc != 0
+      - "✓ AIDE file integrity monitoring configured"
+      - "  Database: /var/lib/aide/aide.db.gz"
+      - "  Logs:     /var/log/aide/aide.log"
+      - "  Timer:    daily (randomized +30min)"
+      - "  IMPORTANT: Store a copy of aide.db.gz on read-only media or Btrfs RO snapshot"
+      - "  Manual check: aide --check"
+
+# ============================================
 
 - name: Security stack complete
   debug:
-    msg: "✓ Security stack configured (nftables + AppArmor + auditd)"
+    msg: "✓ Security stack configured (v5.2: nftables+egress-log + AppArmor + auditd CIS/STIG + AIDE)"

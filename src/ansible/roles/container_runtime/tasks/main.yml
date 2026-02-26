@@ -65,6 +65,54 @@
       mount_program = "/usr/bin/fuse-overlayfs"
       mountopt = "nodev,metacopy=on"
 
+# ============================================
+# HARDENED CONTAINER DEFAULTS (Tier 1)
+# ============================================
+
+- name: Configure hardened Podman security defaults
+  copy:
+    dest: /etc/containers/containers.conf
+    mode: '0644'
+    content: |
+      # Hardened container defaults - Arch Server v5.2
+      # These apply to all containers unless overridden per-run with --cap-add etc.
+      # Reference: https://www.redhat.com/sysadmin/container-security-seccomp
+
+      [containers]
+      # Drop ALL Linux capabilities by default (principle of least privilege)
+      # Add back per-container: podman run --cap-add NET_BIND_SERVICE ...
+      default_capabilities = []
+
+      # Block privilege escalation via setuid/setgid binaries
+      no_new_privileges = true
+
+      # Default PID limit per container (prevent fork-bomb DoS)
+      pids_limit = 256
+
+      # Disable core dumps inside containers
+      default_sysctls = ["kernel.core_pattern=|/bin/false"]
+
+      [engine]
+      # Use crun (smaller, faster OCI runtime vs runc)
+      runtime = "crun"
+
+      # Enable events logging for audit trail
+      events_logger = "journald"
+
+- name: Note about per-container hardening flags
+  debug:
+    msg:
+      - "✓ Hardened container defaults active (cap-drop=ALL, no-new-privileges, pids_limit=256)"
+      - "Recommended run flags to add per container:"
+      - "  --read-only                     (immutable rootfs)"
+      - "  --tmpfs /tmp:rw,noexec,nosuid   (writable tmp without exec)"
+      - "  --memory=512m                   (memory limit)"
+      - "  --cap-add NET_BIND_SERVICE      (only if binding port <1024)"
+      - ""
+      - "Example: podman run -d --read-only --tmpfs /tmp:rw,noexec,nosuid --memory=512m myimage"
+
+# ============================================
+
 - name: Enable Podman socket for root
   systemd:
     name: podman.socket
