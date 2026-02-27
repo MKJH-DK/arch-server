@@ -33,6 +33,35 @@
     path: "/home/{{ admin_user | default('admin') }}"
   register: admin_home_stat
 
+# If the configured admin_user home doesn't exist, fall back to the first
+# non-root member of the wheel group (i.e. whatever user install.sh created)
+- name: Auto-detect wheel group member if admin home not found
+  shell: |
+    getent group wheel | cut -d: -f4 | tr ',' '\n' | grep -v '^root$' | grep -v '^$' | head -1
+  register: detected_wheel_user
+  changed_when: false
+  failed_when: false
+  when:
+    - not paru_stat.stat.exists
+    - not admin_home_stat.stat.exists
+
+- name: Override admin_user with detected wheel member
+  set_fact:
+    admin_user: "{{ detected_wheel_user.stdout | trim }}"
+  when:
+    - detected_wheel_user is defined
+    - detected_wheel_user.stdout is defined
+    - detected_wheel_user.stdout | trim | length > 0
+
+- name: Re-check admin user home after auto-detection
+  stat:
+    path: "/home/{{ admin_user }}"
+  register: admin_home_stat
+  when:
+    - detected_wheel_user is defined
+    - detected_wheel_user.stdout is defined
+    - detected_wheel_user.stdout | trim | length > 0
+
 - name: Bootstrap paru-bin from AUR (no Rust required, runs as admin user)
   become: yes
   become_user: "{{ admin_user | default('admin') }}"

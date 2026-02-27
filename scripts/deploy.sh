@@ -247,7 +247,7 @@ else
 fi
 if [ ${#MISSING_PROGRAMS[@]} -gt 0 ]; then
     warn "Missing programs after deployment: ${MISSING_PROGRAMS[*]}"
-    warn "Try re-running: ansible-playbook $ANSIBLE_DIR/playbooks/site.yml -v"
+    warn "Try re-running: LC_ALL=C.UTF-8 LANG=C.UTF-8 ansible-playbook $ANSIBLE_DIR/playbooks/site.yml -v"
 fi
 echo ""
 
