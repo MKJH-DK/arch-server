@@ -350,10 +350,20 @@
 # AIDE FILE INTEGRITY MONITORING (Tier 2)
 # ============================================
 
-- name: Install AIDE
-  community.general.pacman:
-    name: aide
-    state: present
+- name: Check if AIDE is installed (AUR package - not in official repos)
+  command: pacman -Q aide
+  register: aide_installed
+  failed_when: false
+  changed_when: false
+
+- name: AIDE not installed - show AUR install instructions
+  debug:
+    msg:
+      - "AIDE (File Integrity Monitoring) is in the AUR - not installable via pacman."
+      - "Install manually with an AUR helper:"
+      - "  paru -S aide   OR   yay -S aide"
+      - "Then re-run this playbook to configure AIDE automatically."
+  when: aide_installed.rc != 0
 
 - name: Deploy AIDE configuration
   copy:
@@ -429,6 +439,7 @@
       !/run
       # Snapper snapshot dirs (Btrfs, not real files)
       !/.snapshots
+  when: aide_installed.rc == 0
 
 - name: Create AIDE log directory
   file:
@@ -437,6 +448,7 @@
     mode: '0700'
     owner: root
     group: root
+  when: aide_installed.rc == 0
 
 - name: Create AIDE database directory
   file:
@@ -445,21 +457,26 @@
     mode: '0700'
     owner: root
     group: root
+  when: aide_installed.rc == 0
 
 - name: Check if AIDE database exists
   stat:
     path: /var/lib/aide/aide.db.gz
   register: aide_db
+  when: aide_installed.rc == 0
 
 - name: Initialize AIDE database (first run only)
   command: aide --init
-  when: not aide_db.stat.exists
+  when:
+    - aide_installed.rc == 0
+    - not aide_db.stat.exists
   register: aide_init
   failed_when: false
 
 - name: Activate AIDE database after init
   command: mv /var/lib/aide/aide.db.new.gz /var/lib/aide/aide.db.gz
   when:
+    - aide_installed.rc == 0
     - not aide_db.stat.exists
     - aide_init.rc is defined
     - aide_init.rc == 0
@@ -479,6 +496,7 @@
       StandardOutput=journal
       StandardError=journal
       # Run as root (needs access to shadow, boot, etc.)
+  when: aide_installed.rc == 0
 
 - name: Deploy AIDE check systemd timer (daily)
   copy:
@@ -495,6 +513,7 @@
 
       [Install]
       WantedBy=timers.target
+  when: aide_installed.rc == 0
 
 - name: Enable AIDE daily timer
   systemd:
@@ -502,8 +521,9 @@
     enabled: yes
     state: started
     daemon_reload: yes
+  when: aide_installed.rc == 0
 
-- name: AIDE status
+- name: AIDE status - configured
   debug:
     msg:
       - "✓ AIDE file integrity monitoring configured"
@@ -512,6 +532,15 @@
       - "  Timer:    daily (randomized +30min)"
       - "  IMPORTANT: Store a copy of aide.db.gz on read-only media or Btrfs RO snapshot"
       - "  Manual check: aide --check"
+  when: aide_installed.rc == 0
+
+- name: AIDE status - not installed
+  debug:
+    msg:
+      - "⚠ AIDE not installed (AUR only) - file integrity monitoring inactive"
+      - "  Install: paru -S aide  OR  yay -S aide"
+      - "  Then re-run playbook to configure automatically"
+  when: aide_installed.rc != 0
 
 # ============================================
 
