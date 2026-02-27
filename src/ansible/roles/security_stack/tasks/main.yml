@@ -242,7 +242,11 @@
     content: |
       # CIS/STIG-aligned audit rules - Arch Server v5.2
       # Maps to MITRE ATT&CK techniques where noted
-      # Delete all existing rules
+      # NOTE: -e 2 (immutable) intentionally omitted so Ansible can reload
+      # rules without a reboot. Add -e 2 to a separate
+      # /etc/audit/rules.d/99-finalize.rules only on air-gapped systems.
+
+      # Delete all existing rules first
       -D
 
       # Buffer size (16384 handles bursts from package updates)
@@ -282,7 +286,7 @@
       -w /usr/bin/chsh -p x -k privilege_escalation
       -w /usr/bin/chfn -p x -k privilege_escalation
 
-      # setuid/setgid execution (uid != euid → privilege transition)
+      # setuid/setgid execution (uid != euid → privilege transition) (T1548.003)
       -a always,exit -F arch=b64 -S execve -C uid!=euid -F euid=0 -k setuid_exec
       -a always,exit -F arch=b32 -S execve -C uid!=euid -F euid=0 -k setuid_exec
 
@@ -292,6 +296,7 @@
       -w /sbin/modprobe -p x -k modules
       -w /sbin/modinfo -p x -k modules
       -a always,exit -F arch=b64 -S init_module,finit_module,delete_module -k modules
+      -a always,exit -F arch=b32 -S init_module,finit_module,delete_module -k modules
 
       # ── Boot & init integrity (T1542) ─────────────────────────
       -w /boot/ -p wa -k boot
@@ -303,8 +308,10 @@
       -w /etc/nftables.conf -p wa -k firewall
       -w /etc/nftables.d/ -p wa -k firewall
 
+      # ── CrowdSec config integrity ──────────────────────────────
+      -w /etc/crowdsec/ -p wa -k crowdsec_config
+
       # ── Living-Off-The-Land binaries (T1059, T1105) ───────────
-      # Flags use of common exfiltration/download tools
       -w /usr/bin/curl -p x -k lotl
       -w /usr/bin/wget -p x -k lotl
       -w /usr/bin/nc -p x -k lotl
@@ -326,20 +333,52 @@
 
       # ── File permission changes (T1222) ───────────────────────
       -a always,exit -F arch=b64 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=-1 -k file_perm
+      -a always,exit -F arch=b32 -S chmod,fchmod,fchmodat -F auid>=1000 -F auid!=-1 -k file_perm
       -a always,exit -F arch=b64 -S chown,fchown,lchown,fchownat -F auid>=1000 -F auid!=-1 -k file_own
+      -a always,exit -F arch=b32 -S chown,fchown,lchown,fchownat -F auid>=1000 -F auid!=-1 -k file_own
       -a always,exit -F arch=b64 -S setxattr,lsetxattr,fsetxattr,removexattr,lremovexattr,fremovexattr -F auid>=1000 -k xattr
 
       # ── systemd unit tampering (T1543.002) ────────────────────
       -w /etc/systemd/system/ -p wa -k systemd_units
       -w /usr/lib/systemd/system/ -p wa -k systemd_units
 
+      # ── User/group management (T1136) ─────────────────────────
+      -w /usr/sbin/useradd -p x -k user_mgmt
+      -w /usr/sbin/userdel -p x -k user_mgmt
+      -w /usr/sbin/usermod -p x -k user_mgmt
+      -w /usr/sbin/groupadd -p x -k user_mgmt
+      -w /usr/sbin/groupdel -p x -k user_mgmt
+      -w /usr/sbin/groupmod -p x -k user_mgmt
+      -w /usr/sbin/passwd -p x -k user_mgmt
+
+      # ── Scheduled tasks / cron (T1053) ────────────────────────
+      -w /etc/cron.d/ -p wa -k cron
+      -w /etc/cron.daily/ -p wa -k cron
+      -w /etc/cron.hourly/ -p wa -k cron
+      -w /etc/cron.weekly/ -p wa -k cron
+      -w /etc/crontab -p wa -k cron
+      -w /var/spool/cron/ -p wa -k cron
+
       # ── Container runtime (T1610) ─────────────────────────────
       -w /usr/bin/podman -p x -k containers
       -w /etc/containers/ -p wa -k containers
+  notify: Reload auditd rules
 
-      # ── Immutable: requires reboot to modify rules ─────────────
-      -e 2
-  notify: Restart auditd
+- name: Force-load audit rules via augenrules
+  command: augenrules --load
+  register: augenrules_result
+  changed_when: augenrules_result.rc == 0
+  failed_when: false
+
+- name: Verify audit rules count after load
+  shell: auditctl -l 2>/dev/null | wc -l
+  register: audit_rule_count
+  changed_when: false
+  failed_when: false
+
+- name: Report audit rule count
+  debug:
+    msg: "✓ Audit rules loaded: {{ audit_rule_count.stdout | trim }} rules active"
 
 - name: Enable auditd
   systemd:
@@ -351,19 +390,41 @@
 # AIDE FILE INTEGRITY MONITORING (Tier 2)
 # ============================================
 
-- name: Check if AIDE is installed (AUR package - not in official repos)
+- name: Check if AIDE is installed (AUR package)
+  command: pacman -Q aide
+  register: aide_pkg_check
+  failed_when: false
+  changed_when: false
+
+- name: Check if paru is available for AIDE install
+  stat:
+    path: /usr/bin/paru
+  register: paru_for_aide
+
+- name: Install AIDE from AUR via paru
+  become: yes
+  become_user: "{{ admin_user | default('admin') }}"
+  environment:
+    HOME: "/home/{{ admin_user | default('admin') }}"
+  command: paru -S --noconfirm --needed aide
+  when:
+    - aide_pkg_check.rc != 0
+    - paru_for_aide.stat.exists
+  register: aide_paru_install
+  failed_when: false
+
+- name: Re-check AIDE installation after paru attempt
   command: pacman -Q aide
   register: aide_installed
   failed_when: false
   changed_when: false
 
-- name: AIDE not installed - show AUR install instructions
+- name: Warn if AIDE still not installed
   debug:
     msg:
-      - "AIDE (File Integrity Monitoring) is in the AUR - not installable via pacman."
-      - "Install manually with an AUR helper:"
-      - "  paru -S aide   OR   yay -S aide"
-      - "Then re-run this playbook to configure AIDE automatically."
+      - "⚠ AIDE could not be installed automatically."
+      - "  paru: {{ 'available' if paru_for_aide.stat.exists else 'NOT found — bootstrap may have failed' }}"
+      - "  Retry: paru -S aide && ansible-playbook site.yml --tags security"
   when: aide_installed.rc != 0
 
 - name: Deploy AIDE configuration
@@ -538,13 +599,13 @@
 - name: AIDE status - not installed
   debug:
     msg:
-      - "⚠ AIDE not installed (AUR only) - file integrity monitoring inactive"
-      - "  Install: paru -S aide  OR  yay -S aide"
-      - "  Then re-run playbook to configure automatically"
+      - "⚠ AIDE installation failed — file integrity monitoring inactive"
+      - "  paru: {{ 'available' if paru_for_aide.stat.exists else 'NOT found' }}"
+      - "  Retry: paru -S aide && ansible-playbook site.yml --tags security"
   when: aide_installed.rc != 0
 
 # ============================================
 
 - name: Security stack complete
   debug:
-    msg: "✓ Security stack configured (v5.2: nftables+egress-log + AppArmor + auditd CIS/STIG + AIDE)"
+    msg: "✓ Security stack configured (v5.2: nftables+egress-log + AppArmor + auditd 65+ CIS/STIG rules + AIDE)"

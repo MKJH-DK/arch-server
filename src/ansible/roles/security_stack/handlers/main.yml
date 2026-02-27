@@ -21,3 +21,9 @@
   systemd:
     name: auditd
     state: restarted
+
+- name: Reload auditd rules
+  command: augenrules --load
+  register: augenrules_reload
+  failed_when: false
+  changed_when: augenrules_reload.rc == 0

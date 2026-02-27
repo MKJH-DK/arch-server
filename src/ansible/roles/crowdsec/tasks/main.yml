@@ -1,0 +1,271 @@
+---
+# CrowdSec IPS/IDS for Arch Linux
+# Installs CrowdSec agent + nftables bouncer via AUR (paru)
+# Configures sshd + linux + http-generic collections
+
+# ============================================
+# PRE-FLIGHT
+# ============================================
+
+- name: Check if CrowdSec is already installed
+  command: pacman -Q crowdsec
+  register: crowdsec_pkg
+  failed_when: false
+  changed_when: false
+
+- name: Check if crowdsec-firewall-bouncer is already installed
+  command: pacman -Q crowdsec-firewall-bouncer
+  register: crowdsec_bouncer_pkg
+  failed_when: false
+  changed_when: false
+
+- name: Check if paru is available
+  stat:
+    path: /usr/bin/paru
+  register: paru_bin
+
+- name: Warn if paru not found
+  debug:
+    msg:
+      - "⚠ paru not found — CrowdSec requires AUR"
+      - "  paru should have been bootstrapped in base_hardening."
+      - "  Install manually: paru -S crowdsec crowdsec-firewall-bouncer"
+  when:
+    - not paru_bin.stat.exists
+    - crowdsec_pkg.rc != 0
+
+# ============================================
+# INSTALLATION (via paru AUR helper)
+# ============================================
+
+- name: Install CrowdSec from AUR
+  become: yes
+  become_user: "{{ admin_user | default('admin') }}"
+  environment:
+    HOME: "/home/{{ admin_user | default('admin') }}"
+  command: paru -S --noconfirm --needed crowdsec
+  when:
+    - paru_bin.stat.exists
+    - crowdsec_pkg.rc != 0
+  register: crowdsec_install
+  failed_when: false
+
+- name: Install crowdsec-firewall-bouncer from AUR
+  become: yes
+  become_user: "{{ admin_user | default('admin') }}"
+  environment:
+    HOME: "/home/{{ admin_user | default('admin') }}"
+  command: paru -S --noconfirm --needed crowdsec-firewall-bouncer
+  when:
+    - paru_bin.stat.exists
+    - crowdsec_bouncer_pkg.rc != 0
+  register: bouncer_install
+  failed_when: false
+
+- name: Re-check CrowdSec installation
+  command: pacman -Q crowdsec
+  register: crowdsec_installed
+  failed_when: false
+  changed_when: false
+
+- name: Re-check bouncer installation
+  command: pacman -Q crowdsec-firewall-bouncer
+  register: bouncer_installed
+  failed_when: false
+  changed_when: false
+
+# ============================================
+# CROWDSEC AGENT CONFIGURATION
+# ============================================
+
+- name: Enable and start CrowdSec agent
+  systemd:
+    name: crowdsec
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  when: crowdsec_installed.rc == 0
+
+- name: Wait for CrowdSec to initialise
+  pause:
+    seconds: 5
+  when: crowdsec_installed.rc == 0
+
+- name: Update CrowdSec hub index
+  command: cscli hub update
+  register: hub_update
+  failed_when: false
+  changed_when: hub_update.rc == 0
+  when: crowdsec_installed.rc == 0
+
+- name: Check installed collections
+  command: cscli collections list -o raw
+  register: collections_list
+  failed_when: false
+  changed_when: false
+  when: crowdsec_installed.rc == 0
+
+- name: Install crowdsecurity/linux collection
+  command: cscli collections install crowdsecurity/linux
+  register: install_linux_col
+  failed_when: false
+  changed_when: install_linux_col.rc == 0
+  when:
+    - crowdsec_installed.rc == 0
+    - collections_list.stdout is not defined or 'crowdsecurity/linux' not in collections_list.stdout
+
+- name: Install crowdsecurity/sshd collection
+  command: cscli collections install crowdsecurity/sshd
+  register: install_sshd_col
+  failed_when: false
+  changed_when: install_sshd_col.rc == 0
+  when:
+    - crowdsec_installed.rc == 0
+    - collections_list.stdout is not defined or 'crowdsecurity/sshd' not in collections_list.stdout
+
+- name: Install crowdsecurity/http-generic collection
+  command: cscli collections install crowdsecurity/http-generic
+  register: install_http_col
+  failed_when: false
+  changed_when: install_http_col.rc == 0
+  when:
+    - crowdsec_installed.rc == 0
+    - collections_list.stdout is not defined or 'crowdsecurity/http-generic' not in collections_list.stdout
+
+- name: Reload CrowdSec after collection changes
+  systemd:
+    name: crowdsec
+    state: reloaded
+  failed_when: false
+  when:
+    - crowdsec_installed.rc == 0
+    - (install_linux_col.changed | default(false)) or
+      (install_sshd_col.changed | default(false)) or
+      (install_http_col.changed | default(false))
+
+# ============================================
+# FIREWALL BOUNCER CONFIGURATION
+# ============================================
+
+- name: Check if bouncer API key already registered
+  command: cscli bouncers list -o raw
+  register: bouncers_list
+  failed_when: false
+  changed_when: false
+  when:
+    - crowdsec_installed.rc == 0
+    - bouncer_installed.rc == 0
+
+- name: Generate firewall bouncer API key
+  command: cscli bouncers add firewall-bouncer --key firewall-bouncer-ansible
+  register: bouncer_key_result
+  failed_when: false
+  changed_when: bouncer_key_result.rc == 0
+  when:
+    - crowdsec_installed.rc == 0
+    - bouncer_installed.rc == 0
+    - bouncers_list.stdout is not defined or 'firewall-bouncer' not in bouncers_list.stdout
+
+- name: Extract bouncer API key from output
+  set_fact:
+    crowdsec_bouncer_api_key: "{{ bouncer_key_result.stdout | regex_search('([a-f0-9]{64})', '\\1') | first | default('') }}"
+  when:
+    - bouncer_key_result is defined
+    - bouncer_key_result.rc is defined
+    - bouncer_key_result.rc == 0
+    - bouncer_key_result.stdout | length > 0
+
+- name: Configure crowdsec-firewall-bouncer for nftables
+  copy:
+    dest: /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml
+    mode: '0600'
+    content: |
+      # CrowdSec Firewall Bouncer - nftables mode
+      # Arch Server v5.2
+      api_key: "{{ crowdsec_bouncer_api_key | default('') }}"
+      api_url: "http://127.0.0.1:8080"
+      update_frequency: 10s
+      log_mode: file
+      log_dir: /var/log/crowdsec/
+      log_level: info
+      log_max_size: 100
+      log_max_backups: 3
+      log_max_age: 30
+      mode: nftables
+      nftables:
+        ipv4:
+          enabled: true
+          set-only: false
+          table: crowdsec
+          chain: crowdsec-chain
+          priority: -10
+        ipv6:
+          enabled: true
+          set-only: false
+          table: crowdsec6
+          chain: crowdsec6-chain
+          priority: -10
+      blacklists_ipv4: crowdsec-blacklists
+      blacklists_ipv6: crowdsec6-blacklists
+      deny_action: DROP
+      deny_log: true
+      deny_log_prefix: "[crowdsec] Blocked: "
+  when:
+    - bouncer_installed.rc == 0
+    - crowdsec_bouncer_api_key is defined
+    - crowdsec_bouncer_api_key | length > 0
+  notify: Restart crowdsec-firewall-bouncer
+
+- name: Create CrowdSec log directory
+  file:
+    path: /var/log/crowdsec
+    state: directory
+    mode: '0750'
+    owner: root
+    group: root
+  when: crowdsec_installed.rc == 0
+
+- name: Enable and start firewall bouncer
+  systemd:
+    name: crowdsec-firewall-bouncer
+    enabled: yes
+    state: started
+    daemon_reload: yes
+  failed_when: false
+  when:
+    - bouncer_installed.rc == 0
+    - crowdsec_bouncer_api_key is defined
+    - crowdsec_bouncer_api_key | length > 0
+
+# ============================================
+# STATUS REPORT
+# ============================================
+
+- name: Get CrowdSec version
+  command: cscli version
+  register: crowdsec_version
+  failed_when: false
+  changed_when: false
+  when: crowdsec_installed.rc == 0
+
+- name: CrowdSec configured successfully
+  debug:
+    msg:
+      - "✓ CrowdSec IPS configured"
+      - "  Version: {{ crowdsec_version.stdout_lines[0] | default('unknown') }}"
+      - "  Collections: linux + sshd + http-generic"
+      - "  Bouncer: nftables (DROP mode)"
+      - "  Logs: /var/log/crowdsec/"
+      - "  Manage: cscli decisions list | cscli alerts list | cscli metrics"
+  when: crowdsec_installed.rc == 0
+
+- name: CrowdSec not installed — manual steps
+  debug:
+    msg:
+      - "⚠ CrowdSec not installed (AUR only, paru install failed)"
+      - "  paru -S crowdsec crowdsec-firewall-bouncer"
+      - "  systemctl enable --now crowdsec"
+      - "  cscli collections install crowdsecurity/linux crowdsecurity/sshd"
+      - "  cscli bouncers add firewall-bouncer"
+      - "  systemctl enable --now crowdsec-firewall-bouncer"
+  when: crowdsec_installed.rc != 0

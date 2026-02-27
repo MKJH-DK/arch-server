@@ -66,6 +66,9 @@
     - role: security_stack
       tags: [security, firewall]
 
+    - role: crowdsec
+      tags: [security, crowdsec, ips]
+
     - role: container_runtime
       tags: [containers, podman]
 

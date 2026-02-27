@@ -1,0 +1,12 @@
+---
+- name: Restart crowdsec
+  systemd:
+    name: crowdsec
+    state: restarted
+  failed_when: false
+
+- name: Restart crowdsec-firewall-bouncer
+  systemd:
+    name: crowdsec-firewall-bouncer
+    state: restarted
+  failed_when: false

@@ -15,7 +15,52 @@
       - audit
       - rkhunter
       - lynis
+      - git
+      - base-devel
     state: present
+
+# ============================================
+# PARU AUR HELPER BOOTSTRAP
+# ============================================
+
+- name: Check if paru (AUR helper) is installed
+  stat:
+    path: /usr/bin/paru
+  register: paru_stat
+
+- name: Check if admin user home exists for paru bootstrap
+  stat:
+    path: "/home/{{ admin_user | default('admin') }}"
+  register: admin_home_stat
+
+- name: Bootstrap paru-bin from AUR (no Rust required, runs as admin user)
+  become: yes
+  become_user: "{{ admin_user | default('admin') }}"
+  environment:
+    HOME: "/home/{{ admin_user | default('admin') }}"
+  shell: |
+    set -e
+    TMPDIR=$(mktemp -d /tmp/paru-bootstrap.XXXXXX)
+    trap "rm -rf $TMPDIR" EXIT
+    git clone https://aur.archlinux.org/paru-bin.git "$TMPDIR"
+    cd "$TMPDIR"
+    makepkg -si --noconfirm --needed
+  when:
+    - not paru_stat.stat.exists
+    - admin_home_stat.stat.exists
+  register: paru_bootstrap
+  failed_when: false
+
+- name: Paru bootstrap status
+  debug:
+    msg: >-
+      {{
+        '✓ paru AUR helper installed' if (paru_bootstrap.rc is defined and paru_bootstrap.rc == 0)
+        else ('✓ paru already installed' if paru_stat.stat.exists
+        else '⚠ paru bootstrap failed — AUR packages will not auto-install')
+      }}
+
+# ============================================
 
 - name: Check if linux-hardened is installed
   command: pacman -Q linux-hardened
