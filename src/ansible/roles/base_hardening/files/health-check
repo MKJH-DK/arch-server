@@ -163,11 +163,13 @@ else
     check_warn "Root SSH login not restricted"
 fi
 
-# Check firewall rules (input chain should have policy drop)
+# Check firewall rules (policy drop OR explicit drop at end of input chain)
 if nft list chain inet filter input 2>/dev/null | grep -q "policy drop"; then
     check_pass "Firewall default deny policy"
 elif nft list ruleset 2>/dev/null | grep -q "policy drop"; then
     check_pass "Firewall default deny policy"
+elif nft list chain inet filter input 2>/dev/null | grep -qE "drop$|counter drop"; then
+    check_pass "Firewall default deny policy (explicit drop rule)"
 else
     check_warn "Firewall policy not set to deny"
 fi
@@ -377,8 +379,14 @@ else
     check_fail "Critical memory usage (${MEM_USAGE}% used)"
 fi
 
-# Check journal size
-JOURNAL_SIZE=$(journalctl --disk-usage 2>/dev/null | awk '{print $7}' | sed 's/M//g' || echo "0")
+# Check journal size (convert to MB as integer, handles K/M/G suffixes)
+JOURNAL_SIZE=$(journalctl --disk-usage 2>/dev/null | awk '{
+    val=$7; unit=substr(val, length(val));
+    num=val+0;
+    if (unit=="G") num=num*1024;
+    else if (unit=="K") num=num/1024;
+    printf "%.0f", num
+}' || echo "0")
 if [ "$JOURNAL_SIZE" -lt 500 ]; then
     check_pass "Journal size OK (${JOURNAL_SIZE}M)"
 else
@@ -446,7 +454,7 @@ fi
 SNAPSHOT_COUNT=$(snapper list 2>/dev/null | awk 'NR > 2 && NF { c++ } END { print c+0 }') || SNAPSHOT_COUNT=0
 LOAD=$(uptime | awk -F'load average:' '{ print $2 }' | cut -d, -f1 | xargs)
 MEM_USAGE=$(free | grep Mem | awk '{printf "%.0f", $3/$2 * 100.0}')
-JOURNAL_SIZE=$(journalctl --disk-usage 2>/dev/null | awk '{print $7}' | sed 's/M//g' || echo "0")
+JOURNAL_SIZE=$(journalctl --disk-usage 2>/dev/null | awk '{val=$7; unit=substr(val,length(val)); num=val+0; if(unit=="G") num=num*1024; else if(unit=="K") num=num/1024; printf "%.0f", num}' || echo "0")
 FAILED_SERVICES=$(systemctl --failed --quiet --no-legend 2>/dev/null | wc -l)
 ROOT_USAGE=$(df / --output=pcent | tail -1 | tr -d ' %')
 TPM_AVAILABLE=$([ -e /dev/tpm0 ] || [ -e /dev/tpmrm0 ] && echo "true" || echo "false")
