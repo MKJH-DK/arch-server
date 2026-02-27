@@ -16,6 +16,9 @@ PASSED=0
 FAILED=0
 WARNINGS=0
 
+# Defaults for conditional variables (set -u safe)
+SNAPSHOT_COUNT=0
+
 # Output format
 JSON_OUTPUT=false
 if [[ "${1:-}" == "--json" ]]; then
@@ -126,6 +129,20 @@ if systemctl is-active snapper-timeline.timer &>/dev/null; then
     check_pass "Snapper timeline"
 else
     check_warn "Snapper timeline not running"
+fi
+
+# Cloudflare Tunnel
+if systemctl is-active cloudflared &>/dev/null; then
+    check_pass "Cloudflare tunnel"
+elif command -v cloudflared &>/dev/null; then
+    check_warn "cloudflared installed but not running"
+fi
+
+# Paru (AUR helper - required for CrowdSec and other AUR packages)
+if command -v paru &>/dev/null; then
+    check_pass "paru AUR helper"
+else
+    check_warn "paru not installed (required for AUR packages)"
 fi
 
 # Web Checks
@@ -350,8 +367,15 @@ else
     check_warn "CrowdSec not installed"
 fi
 
+# CrowdSec firewall bouncer (nftables integration)
+if systemctl is-active crowdsec-firewall-bouncer &>/dev/null; then
+    check_pass "CrowdSec firewall bouncer"
+elif systemctl list-unit-files crowdsec-firewall-bouncer.service &>/dev/null | grep -q "crowdsec-firewall-bouncer"; then
+    check_warn "CrowdSec firewall bouncer installed but not running"
+fi
+
 # Check certificates (if domain configured)
-if [ -f /etc/ssl/caddy/certificates/ ]; then
+if [ -d /etc/ssl/caddy/certificates/ ]; then
     CERT_COUNT=$(find /etc/ssl/caddy/certificates/ -name "*.crt" 2>/dev/null | wc -l)
     if [ "$CERT_COUNT" -gt 0 ]; then
         check_pass "SSL certificates found ($CERT_COUNT certificates)"
@@ -368,8 +392,7 @@ fi
 
 # Check system load
 LOAD=$(uptime | awk -F'load average:' '{ print $2 }' | cut -d, -f1 | xargs)
-LOAD_INT=$(echo "$LOAD < 2.0" | bc -l 2>/dev/null || echo "1")
-if [ "$LOAD_INT" -eq 1 ]; then
+if awk -v l="$LOAD" 'BEGIN { exit !(l+0 < 2.0) }'; then
     check_pass "System load OK ($LOAD)"
 else
     check_warn "High system load ($LOAD)"
@@ -463,17 +486,10 @@ else
     SCORE=0
 fi
 
-# Collect additional metrics for JSON
-SNAPSHOT_COUNT=$(snapper list 2>/dev/null | awk 'NR > 2 && NF { c++ } END { print c+0 }') || SNAPSHOT_COUNT=0
-LOAD=$(uptime | awk -F'load average:' '{ print $2 }' | cut -d, -f1 | xargs)
-MEM_USAGE=$(free | grep Mem | awk '{printf "%.0f", $3/$2 * 100.0}')
-JOURNAL_SIZE=$(journalctl --disk-usage 2>/dev/null | awk '/take up/ { for(i=1;i<=NF;i++) { if($i~/^[0-9]/) { num=$i+0; u=toupper($(i+1)); if(u~/^G/) { printf "%d",int(num*1024); exit } if(u~/^K/) { printf "%d",int(num/1024); exit } printf "%d",int(num); exit } } }' 2>/dev/null || echo "0"); JOURNAL_SIZE=${JOURNAL_SIZE:-0}
-FAILED_SERVICES=$(systemctl --failed --quiet --no-legend 2>/dev/null | wc -l)
-ROOT_USAGE=$(df / --output=pcent | tail -1 | tr -d ' %')
+# Collect additional JSON-only metrics (AUDIT_RULES, MMAP_RND, LOAD, MEM_USAGE,
+# JOURNAL_SIZE, FAILED_SERVICES, ROOT_USAGE, SNAPSHOT_COUNT already set above)
 TPM_AVAILABLE=$([ -e /dev/tpm0 ] || [ -e /dev/tpmrm0 ] && echo "true" || echo "false")
 SECURE_BOOT=$([ -d /sys/firmware/efi ] && mokutil --sb-state 2>/dev/null | grep -q "SecureBoot enabled" && echo "true" || echo "false")
-AUDIT_RULES=$(auditctl -l 2>/dev/null | wc -l || echo "0")
-MMAP_RND=$(sysctl -n vm.mmap_rnd_bits 2>/dev/null || echo "0")
 AIDE_DB=$([ -f /var/lib/aide/aide.db.gz ] && echo "true" || echo "false")
 DNS_DOT=$(grep -q "DNSOverTLS=yes" /etc/systemd/resolved.conf 2>/dev/null && echo "true" || echo "false")
 

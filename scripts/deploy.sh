@@ -106,10 +106,17 @@ log ""
 log "Phase 1: Checking prerequisites..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+# Check for git and base-devel (required for AUR/paru builds)
+if ! command -v git &>/dev/null || ! pacman -Qq base-devel &>/dev/null 2>&1; then
+    log "Installing git and base-devel (required for AUR packages)..."
+    pacman -Sy --noconfirm --needed git base-devel
+fi
+log "✓ Build tools installed (git, base-devel)"
+
 # Check for ansible
 if ! command -v ansible-playbook &>/dev/null; then
     log "Installing Ansible..."
-    pacman -Sy --noconfirm ansible python
+    pacman -Sy --noconfirm --needed ansible python
 fi
 log "✓ Ansible installed"
 
@@ -211,26 +218,59 @@ log ""
 log "Phase 3: Verifying deployment..."
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
+# Verify key programs are installed after Ansible
+info "Verifying installed programs..."
+MISSING_PROGRAMS=()
+declare -A PROG_CHECKS=(
+    ["caddy"]="caddy"
+    ["nft"]="nft"
+    ["auditctl"]="auditctl"
+    ["apparmor_status"]="apparmor_status"
+    ["podman"]="podman"
+    ["snapper"]="snapper"
+    ["paru"]="paru"
+)
+for cmd in "${!PROG_CHECKS[@]}"; do
+    if command -v "$cmd" &>/dev/null; then
+        log "✓ ${PROG_CHECKS[$cmd]} installed"
+    else
+        warn "⚠ ${PROG_CHECKS[$cmd]} not found"
+        MISSING_PROGRAMS+=("${PROG_CHECKS[$cmd]}")
+    fi
+done
+# CrowdSec uses cscli as its CLI tool
+if command -v cscli &>/dev/null; then
+    log "✓ crowdsec (cscli) installed"
+else
+    warn "⚠ crowdsec (cscli) not found"
+    MISSING_PROGRAMS+=("crowdsec")
+fi
+if [ ${#MISSING_PROGRAMS[@]} -gt 0 ]; then
+    warn "Missing programs after deployment: ${MISSING_PROGRAMS[*]}"
+    warn "Try re-running: ansible-playbook $ANSIBLE_DIR/playbooks/site.yml -v"
+fi
+echo ""
+
 # Run health check if available
 if [ -x /usr/local/bin/health-check ]; then
     /usr/local/bin/health-check || true
 else
     # Basic checks
     info "Running basic verification..."
-    
+
     if systemctl is-active caddy &>/dev/null; then
         log "✓ Caddy web server running"
     else
         warn "Caddy not running"
     fi
-    
+
     # nftables is a oneshot service - check if rules are loaded instead
     if nft list ruleset 2>/dev/null | grep -q "table"; then
         log "✓ Firewall active (nftables rules loaded)"
     else
         warn "Firewall rules not loaded"
     fi
-    
+
     if curl -sf http://localhost/ &>/dev/null; then
         log "✓ Web server responding"
     else
