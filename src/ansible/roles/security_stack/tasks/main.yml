@@ -339,6 +339,7 @@
 
       # ── Immutable: requires reboot to modify rules ─────────────
       -e 2
+  notify: Restart auditd
 
 - name: Enable auditd
   systemd:
