@@ -56,11 +56,21 @@
 - name: Re-check admin user home after auto-detection
   stat:
     path: "/home/{{ admin_user }}"
-  register: admin_home_stat
+  register: admin_home_recheck_stat
   when:
     - detected_wheel_user is defined
     - detected_wheel_user.stdout is defined
     - detected_wheel_user.stdout | trim | length > 0
+
+# Resolve the effective admin home stat — the re-check task above may be skipped
+# (overwriting register with a skipped dict that has no .stat), so we fall back
+# to the original stat if the re-check was skipped.
+- name: Resolve effective admin home availability
+  set_fact:
+    effective_admin_home_exists: >-
+      {{ (admin_home_recheck_stat.stat.exists
+          if ('stat' in admin_home_recheck_stat)
+          else admin_home_stat.stat.exists) | bool }}
 
 - name: Bootstrap paru-bin from AUR (no Rust required, runs as admin user)
   become: yes
@@ -76,7 +86,7 @@
     makepkg -si --noconfirm --needed
   when:
     - not paru_stat.stat.exists
-    - admin_home_stat.stat.exists
+    - effective_admin_home_exists
   register: paru_bootstrap
   failed_when: false
 
