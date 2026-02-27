@@ -11,7 +11,8 @@
       "Bash(git push:*)",
       "Bash(TMPDIR=/storage/emulated/0/tmp git -C /storage/emulated/0/obsidian-vault/_repos/private/arch-server status)",
       "Bash(git ls-tree -r HEAD src/ansible)",
-      "Bash(find /storage/emulated/0/obsidian-vault/_repos/private/arch-server/src/ansible/roles -maxdepth 1 -type d -name '[a-z_]*' 2>/dev/null | xargs basename -a | sort)"
+      "Bash(find /storage/emulated/0/obsidian-vault/_repos/private/arch-server/src/ansible/roles -maxdepth 1 -type d -name '[a-z_]*' 2>/dev/null | xargs basename -a | sort)",
+      "Bash(find /storage/emulated/0/obsidian-vault/_repos/private/arch-server/src/ansible -type f -name \"*.yml\" 2>/dev/null | head -50)"
     ]
   }
 }
