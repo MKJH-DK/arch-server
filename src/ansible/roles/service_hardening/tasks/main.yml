@@ -1,0 +1,287 @@
+---
+# Service Hardening Role - Arch Server v5.2
+# Tier 1: systemd drop-in sandbox directives for every service
+# Tier 1: systemd-creds encrypted secrets framework
+
+# ============================================
+# SYSTEMD-CREDS FRAMEWORK (Tier 1)
+# ============================================
+
+- name: Create encrypted credstore directory
+  file:
+    path: /etc/credstore.encrypted
+    state: directory
+    mode: '0700'
+    owner: root
+    group: root
+
+- name: Install credential management helper script
+  copy:
+    dest: /usr/local/bin/store-credential
+    mode: '0750'
+    content: |
+      #!/bin/bash
+      # Encrypt a secret into /etc/credstore.encrypted using TPM2 + systemd-creds
+      # Usage: store-credential <name>
+      #        echo -n "secret" | store-credential <name>
+      #
+      # The encrypted credential can only be decrypted on THIS hardware.
+      # Reference in service units: LoadCredentialEncrypted=<name>:/etc/credstore.encrypted/<name>.cred
+      set -euo pipefail
+
+      if [[ $EUID -ne 0 ]]; then
+        echo "Error: must run as root" >&2
+        exit 1
+      fi
+
+      NAME="${1:-}"
+      if [[ -z "$NAME" ]]; then
+        echo "Usage: store-credential <credential-name>" >&2
+        echo "       echo -n 'secret' | store-credential <name>" >&2
+        echo "" >&2
+        echo "Example: echo -n 'my-cloudflare-token' | store-credential cf-tunnel-token" >&2
+        exit 1
+      fi
+
+      OUTFILE="/etc/credstore.encrypted/${NAME}.cred"
+
+      if [[ -t 0 ]]; then
+        # Interactive: prompt for secret
+        read -rsp "Enter secret for '${NAME}': " SECRET
+        echo
+        read -rsp "Confirm secret: " SECRET2
+        echo
+        if [[ "$SECRET" != "$SECRET2" ]]; then
+          echo "Error: secrets do not match" >&2
+          exit 1
+        fi
+        echo -n "$SECRET" | systemd-creds encrypt --name="${NAME}" - "${OUTFILE}"
+        unset SECRET SECRET2
+      else
+        # Piped: read from stdin
+        systemd-creds encrypt --name="${NAME}" - "${OUTFILE}"
+      fi
+
+      chmod 600 "${OUTFILE}"
+      echo "✓ Credential '${NAME}' encrypted to ${OUTFILE}"
+      echo "  Add to service unit [Service] section:"
+      echo "  LoadCredentialEncrypted=${NAME}:${OUTFILE}"
+      echo "  Then access at runtime: \${CREDENTIALS_DIRECTORY}/${NAME}"
+
+- name: Note about systemd-creds usage
+  debug:
+    msg:
+      - "✓ systemd-creds framework ready"
+      - "Encrypt a secret: echo -n 'token' | store-credential cf-tunnel-token"
+      - "Credentials stored in: /etc/credstore.encrypted/"
+      - "Add to service unit:  LoadCredentialEncrypted=name:/etc/credstore.encrypted/name.cred"
+      - "TPM-bound: credentials can ONLY be decrypted on this hardware"
+
+# ============================================
+# CADDY SERVICE HARDENING DROP-IN (Tier 1)
+# ============================================
+
+- name: Create caddy drop-in directory
+  file:
+    path: /etc/systemd/system/caddy.service.d
+    state: directory
+    mode: '0755'
+
+- name: Deploy caddy systemd hardening drop-in
+  copy:
+    dest: /etc/systemd/system/caddy.service.d/hardening.conf
+    mode: '0644'
+    content: |
+      # Caddy service hardening - Arch Server v5.2
+      # Run: systemd-analyze security caddy.service  (target: < 5.0)
+      [Service]
+      # Read-only filesystem (caddy only writes to /var/log/caddy, /var/lib/caddy)
+      ProtectSystem=strict
+      ReadWritePaths=/var/log/caddy /var/lib/caddy /etc/caddy
+
+      # No access to /home or /root
+      ProtectHome=yes
+
+      # Private /tmp (isolated from other services)
+      PrivateTmp=yes
+
+      # Block privilege escalation
+      NoNewPrivileges=yes
+
+      # Only the capabilities caddy actually needs
+      CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+      AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+      # Kernel protection
+      ProtectKernelTunables=yes
+      ProtectKernelModules=yes
+      ProtectKernelLogs=yes
+      ProtectClock=yes
+      ProtectHostname=yes
+      ProtectControlGroups=yes
+
+      # Memory protection: no JIT, no W+X pages
+      MemoryDenyWriteExecute=yes
+      RestrictRealtime=yes
+
+      # Whitelist only needed syscalls
+      SystemCallFilter=@system-service
+      SystemCallErrorNumber=EPERM
+
+      # Network: only IPv4/IPv6 and Unix sockets
+      RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+      # Restrict namespaces
+      RestrictNamespaces=yes
+
+      # Deny ptrace of this process
+      LockPersonality=yes
+  notify: Reload systemd daemon
+
+# ============================================
+# SSHD SERVICE HARDENING DROP-IN (Tier 1)
+# ============================================
+
+- name: Create sshd drop-in directory
+  file:
+    path: /etc/systemd/system/sshd.service.d
+    state: directory
+    mode: '0755'
+
+- name: Deploy sshd systemd hardening drop-in
+  copy:
+    dest: /etc/systemd/system/sshd.service.d/hardening.conf
+    mode: '0644'
+    content: |
+      # sshd service hardening - Arch Server v5.2
+      [Service]
+      ProtectSystem=strict
+      ProtectHome=read-only
+      PrivateTmp=yes
+      NoNewPrivileges=yes
+      ProtectKernelTunables=yes
+      ProtectKernelModules=yes
+      ProtectKernelLogs=yes
+      ProtectControlGroups=yes
+      ProtectClock=yes
+      MemoryDenyWriteExecute=yes
+      RestrictRealtime=yes
+      LockPersonality=yes
+      RestrictNamespaces=yes
+      # sshd needs AF_UNIX for PAM and AF_INET/INET6 for connections
+      RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+      # sshd needs broader syscall set for auth/fork
+      SystemCallFilter=@system-service @network-io @process
+      SystemCallErrorNumber=EPERM
+  notify: Reload systemd daemon
+
+# ============================================
+# AUDITD SERVICE HARDENING DROP-IN (Tier 1)
+# ============================================
+
+- name: Create auditd drop-in directory
+  file:
+    path: /etc/systemd/system/auditd.service.d
+    state: directory
+    mode: '0755'
+
+- name: Deploy auditd systemd hardening drop-in
+  copy:
+    dest: /etc/systemd/system/auditd.service.d/hardening.conf
+    mode: '0644'
+    content: |
+      # auditd service hardening - Arch Server v5.2
+      [Service]
+      ProtectSystem=strict
+      ProtectHome=yes
+      PrivateTmp=yes
+      NoNewPrivileges=yes
+      ProtectKernelModules=yes
+      ProtectClock=yes
+      ProtectHostname=yes
+      ProtectControlGroups=yes
+      MemoryDenyWriteExecute=yes
+      RestrictRealtime=yes
+      LockPersonality=yes
+      RestrictNamespaces=yes
+      RestrictAddressFamilies=AF_UNIX AF_NETLINK
+      # auditd needs @audit for kernel audit subsystem
+      CapabilityBoundingSet=CAP_AUDIT_CONTROL CAP_AUDIT_READ CAP_AUDIT_WRITE
+  notify: Reload systemd daemon
+
+# ============================================
+# CLOUDFLARED SERVICE HARDENING (Tier 1, conditional)
+# ============================================
+
+- name: Check if cloudflared is installed
+  command: pacman -Q cloudflared
+  register: cloudflared_check
+  failed_when: false
+  changed_when: false
+
+- name: Create cloudflared drop-in directory
+  file:
+    path: /etc/systemd/system/cloudflared.service.d
+    state: directory
+    mode: '0755'
+  when: cloudflared_check.rc == 0
+
+- name: Deploy cloudflared systemd hardening drop-in
+  copy:
+    dest: /etc/systemd/system/cloudflared.service.d/hardening.conf
+    mode: '0644'
+    content: |
+      # cloudflared service hardening - Arch Server v5.2
+      [Service]
+      ProtectSystem=strict
+      ProtectHome=yes
+      PrivateTmp=yes
+      NoNewPrivileges=yes
+      ProtectKernelTunables=yes
+      ProtectKernelModules=yes
+      ProtectKernelLogs=yes
+      ProtectControlGroups=yes
+      ProtectClock=yes
+      ProtectHostname=yes
+      MemoryDenyWriteExecute=yes
+      RestrictRealtime=yes
+      LockPersonality=yes
+      RestrictNamespaces=yes
+      # cloudflared only needs outbound HTTPS/QUIC
+      RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+      CapabilityBoundingSet=
+      SystemCallFilter=@system-service @network-io
+      SystemCallErrorNumber=EPERM
+  when: cloudflared_check.rc == 0
+  notify: Reload systemd daemon
+
+# ============================================
+# VERIFY HARDENING SCORES
+# ============================================
+
+- name: Run systemd-analyze security on key services
+  command: systemd-analyze security --no-pager {{ item }}
+  register: security_scores
+  loop:
+    - caddy
+    - sshd
+    - auditd
+  failed_when: false
+  changed_when: false
+
+- name: Report service security scores
+  debug:
+    msg: "{{ item.stdout_lines | select('match', '.*Overall.*') | list | first | default('score not available') }}"
+  loop: "{{ security_scores.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Service hardening complete
+  debug:
+    msg:
+      - "✓ Service hardening drop-ins deployed (v5.2)"
+      - "  caddy, sshd, auditd hardened"
+      - "  cloudflared: {{ 'hardened' if cloudflared_check.rc == 0 else 'not installed (skip)' }}"
+      - "  systemd-creds: /usr/local/bin/store-credential ready"
+      - ""
+      - "  Run: systemd-analyze security <service> to verify scores"

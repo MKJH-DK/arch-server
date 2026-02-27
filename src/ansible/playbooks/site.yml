@@ -76,11 +76,17 @@
     - role: webserver
       tags: [web, caddy]
 
+    - role: service_hardening
+      tags: [hardening, systemd, secrets]
+
     - role: monitoring
       tags: [monitoring]
 
     - role: safe_updates
       tags: [updates, snapshots]
+
+    - role: offsite_backup
+      tags: [backup, restic]
 
   post_tasks:
     - name: Run health check

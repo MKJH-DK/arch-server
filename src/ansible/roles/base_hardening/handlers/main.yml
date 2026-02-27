@@ -3,3 +3,12 @@
   systemd:
     name: sshd
     state: restarted
+
+- name: Restart systemd-resolved
+  systemd:
+    name: systemd-resolved
+    state: restarted
+
+- name: Regenerate initramfs
+  command: mkinitcpio -P
+  failed_when: false

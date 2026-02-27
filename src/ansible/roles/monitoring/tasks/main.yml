@@ -222,26 +222,47 @@
     state: directory
     mode: '0755'
 
-- name: Configure journald
+- name: Configure journald with Forward Secure Sealing (Tier 1)
   copy:
     dest: /etc/systemd/journald.conf.d/server.conf
     mode: '0644'
     content: |
+      # journald configuration - Arch Server v5.2
+      # FSS (Forward Secure Sealing) prevents retroactive log tampering.
+      # Even with root access, sealed entries cannot be modified undetected.
       [Journal]
-      # Persistent storage
+      # Persistent storage (survives reboots)
       Storage=persistent
-      
+
       # Compression
       Compress=yes
-      
+
       # Size limits
       SystemMaxUse=500M
       SystemMaxFileSize=50M
       RuntimeMaxUse=100M
-      
-      # Forward to syslog for compatibility
+
+      # Forward Secure Sealing: seal journal entries cryptographically
+      # IMPORTANT: after deploy, run: journalctl --setup-keys
+      # Store the verification key OFFLINE (print QR code or write down)
+      # Verify integrity with: journalctl --verify --verify-key=<key>
+      Seal=yes
+
+      # Rate limiting (prevent log flooding from misbehaving services)
+      RateLimitIntervalSec=30s
+      RateLimitBurst=10000
+
+      # No syslog forwarding (reduce attack surface)
       ForwardToSyslog=no
   notify: Restart journald
+
+- name: Note about FSS key setup (manual step required)
+  debug:
+    msg:
+      - "⚠ MANUAL STEP: Forward Secure Sealing enabled in journald config."
+      - "After deployment, run: journalctl --setup-keys --interval=5min"
+      - "CRITICAL: Store the verification key OFFLINE (print or write down)."
+      - "Verify integrity anytime: journalctl --verify --verify-key=<your-key>"
 
 - name: Enable sysstat collection
   systemd:
@@ -250,6 +271,97 @@
     state: started
   failed_when: false
 
+# ============================================
+# INCIDENT RESPONSE TRIAGE SCRIPT (Tier 3)
+# ============================================
+
+- name: Deploy IR triage script
+  copy:
+    dest: /usr/local/bin/ir-triage
+    mode: '0750'
+    content: |
+      #!/bin/bash
+      # Incident Response Triage Script - Arch Server v5.2
+      # Captures forensic snapshot for security investigation
+      # Usage: ir-triage [output-dir]
+      set -euo pipefail
+
+      OUTDIR="${1:-/var/log/ir-triage-$(date +%Y%m%d-%H%M%S)}"
+      mkdir -p "$OUTDIR"
+      chmod 700 "$OUTDIR"
+
+      log() { echo "[$(date '+%H:%M:%S')] $*" | tee -a "$OUTDIR/triage.log"; }
+
+      log "=== IR TRIAGE STARTED ($(hostname)) ==="
+      log "Output: $OUTDIR"
+      echo
+
+      # ── Network state ─────────────────────────────────────────
+      log "Capturing network state..."
+      ss -tulpn > "$OUTDIR/network-listening.txt" 2>&1
+      ss -tupn  > "$OUTDIR/network-connections.txt" 2>&1
+      ip route show > "$OUTDIR/routes.txt" 2>&1
+      ip addr show  > "$OUTDIR/interfaces.txt" 2>&1
+      nft list ruleset > "$OUTDIR/nftables-ruleset.txt" 2>&1 || true
+
+      # ── Process tree ──────────────────────────────────────────
+      log "Capturing process tree..."
+      ps auxf > "$OUTDIR/processes.txt" 2>&1
+      ps -eo pid,ppid,user,lstart,cmd > "$OUTDIR/processes-detail.txt" 2>&1
+
+      # ── Login history ─────────────────────────────────────────
+      log "Capturing login history..."
+      last -n 50 > "$OUTDIR/login-last.txt" 2>&1
+      lastlog    > "$OUTDIR/login-lastlog.txt" 2>&1
+      who        > "$OUTDIR/login-who.txt" 2>&1
+
+      # ── Kernel modules ────────────────────────────────────────
+      log "Capturing loaded kernel modules..."
+      lsmod > "$OUTDIR/kernel-modules.txt" 2>&1
+
+      # ── Scheduled tasks ───────────────────────────────────────
+      log "Capturing scheduled tasks..."
+      systemctl list-timers --all > "$OUTDIR/timers.txt" 2>&1
+      crontab -l > "$OUTDIR/crontab-root.txt" 2>&1 || echo "(no root crontab)" > "$OUTDIR/crontab-root.txt"
+      ls -la /etc/cron* > "$OUTDIR/cron-dirs.txt" 2>&1 || true
+
+      # ── Audit summary ─────────────────────────────────────────
+      log "Capturing audit events (last 200)..."
+      ausearch -i --start today > "$OUTDIR/audit-today.txt" 2>&1 || \
+        journalctl -k -n 200 > "$OUTDIR/audit-today.txt" 2>&1
+
+      # ── Recent journal entries ────────────────────────────────
+      log "Capturing recent journal (last 500 lines)..."
+      journalctl -n 500 --no-pager > "$OUTDIR/journal-recent.txt" 2>&1
+
+      # ── Failed services ───────────────────────────────────────
+      log "Capturing failed services..."
+      systemctl --failed > "$OUTDIR/failed-services.txt" 2>&1
+
+      # ── Suspicious file activity (last 24h) ───────────────────
+      log "Scanning for recently modified files in /etc /usr/bin /usr/lib..."
+      find /etc /usr/bin /usr/sbin /usr/lib -newer /proc/1 -type f \
+        2>/dev/null > "$OUTDIR/recently-modified.txt" || true
+
+      # ── AIDE integrity check ──────────────────────────────────
+      log "Running AIDE integrity check (may take a moment)..."
+      aide --check > "$OUTDIR/aide-check.txt" 2>&1 || \
+        echo "AIDE check failed or database not initialized" > "$OUTDIR/aide-check.txt"
+
+      # ── Environment ───────────────────────────────────────────
+      log "Capturing system info..."
+      uname -a           > "$OUTDIR/uname.txt"
+      uptime             >> "$OUTDIR/uname.txt"
+      cat /etc/os-release >> "$OUTDIR/uname.txt"
+      df -h              > "$OUTDIR/disk-usage.txt"
+      free -h            > "$OUTDIR/memory.txt"
+
+      # ── Summary ───────────────────────────────────────────────
+      FILECOUNT=$(find "$OUTDIR" -type f | wc -l)
+      log "=== TRIAGE COMPLETE: $FILECOUNT files in $OUTDIR ==="
+      echo
+      echo "Archive with: tar czf ir-triage.tar.gz -C $(dirname $OUTDIR) $(basename $OUTDIR)"
+
 - name: Monitoring complete
   debug:
-    msg: "✓ Monitoring tools installed (htop, iotop, sysstat)"
+    msg: "✓ Monitoring configured (v5.2: +FSS sealing, +IR triage script at /usr/local/bin/ir-triage)"

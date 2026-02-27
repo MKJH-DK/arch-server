@@ -17,11 +17,38 @@ import /etc/caddy/conf.d/*.caddy
   file_server
   encode gzip zstd
 
+  # ── Request limits (Tier 2) ───────────────────────────────────
+  # Caddy has no default body limit (unlike nginx's 1MB) - set explicitly
+  request_body {
+    max_size 10MB
+  }
+
+  # ── Security headers (Tier 2) ─────────────────────────────────
   header {
-    Strict-Transport-Security "max-age=31536000; includeSubDomains; preload"
+    # HSTS: 2 years, include subdomains, preload-eligible
+    Strict-Transport-Security "max-age=63072000; includeSubDomains; preload"
+
+    # Prevent MIME-type sniffing
     X-Content-Type-Options "nosniff"
+
+    # No framing (clickjacking protection)
     X-Frame-Options "DENY"
+
+    # Referrer policy: send origin only on same-site, nothing cross-site
     Referrer-Policy "strict-origin-when-cross-origin"
+
+    # Content Security Policy: strict baseline (customize per app via conf.d)
+    Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+
+    # Permissions Policy: disable all powerful features by default
+    Permissions-Policy "accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), camera=(), cross-origin-isolated=(), display-capture=(), document-domain=(), encrypted-media=(), execution-while-not-rendered=(), execution-while-out-of-viewport=(), fullscreen=(), geolocation=(), gyroscope=(), keyboard-map=(), magnetometer=(), microphone=(), midi=(), navigation-override=(), payment=(), picture-in-picture=(), publickey-credentials-get=(), screen-wake-lock=(), sync-xhr=(), usb=(), web-share=(), xr-spatial-tracking=()"
+
+    # Cross-origin isolation headers
+    Cross-Origin-Opener-Policy "same-origin"
+    Cross-Origin-Embedder-Policy "require-corp"
+    Cross-Origin-Resource-Policy "same-origin"
+
+    # Remove server identity
     -Server
   }
 
@@ -46,10 +73,16 @@ import /etc/caddy/conf.d/*.caddy
   file_server
   encode gzip zstd
 
+  request_body {
+    max_size 10MB
+  }
+
   header {
     X-Content-Type-Options "nosniff"
     X-Frame-Options "DENY"
     Referrer-Policy "strict-origin-when-cross-origin"
+    Content-Security-Policy "default-src 'self'; frame-ancestors 'none'"
+    Permissions-Policy "geolocation=(), microphone=(), camera=()"
     -Server
   }
 
