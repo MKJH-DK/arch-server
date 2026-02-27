@@ -1,5 +1,5 @@
 #!/bin/bash
-# Health Check Script for Arch Linux v5.1
+# Health Check Script for Arch Linux v5.2
 # Comprehensive system health verification
 
 set -euo pipefail
@@ -47,7 +47,7 @@ check_warn() {
 if ! $JSON_OUTPUT; then
     echo ""
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    echo "  ARCH LINUX v5.1 HEALTH CHECK"
+    echo "  ARCH LINUX v5.2 HEALTH CHECK"
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     echo ""
 fi
@@ -177,6 +177,104 @@ if uname -r | grep -q "hardened"; then
     check_pass "Hardened kernel"
 else
     check_warn "Standard kernel (not hardened)"
+fi
+
+# Hardening Checks
+if ! $JSON_OUTPUT; then
+    echo ""
+    echo -e "${BLUE}[HARDENING]${NC}"
+fi
+
+# DNS-over-TLS
+if grep -q "DNSOverTLS=yes" /etc/systemd/resolved.conf 2>/dev/null || \
+   grep -rq "DNSOverTLS=yes" /etc/systemd/resolved.conf.d/ 2>/dev/null; then
+    check_pass "DNS-over-TLS active"
+else
+    check_warn "DNS-over-TLS not configured"
+fi
+
+# CIS/STIG auditd ruleset
+AUDIT_RULES=$(auditctl -l 2>/dev/null | wc -l || echo "0")
+if [ "$AUDIT_RULES" -gt 30 ]; then
+    check_pass "CIS/STIG auditd ruleset active ($AUDIT_RULES rules)"
+else
+    check_warn "Minimal auditd rules ($AUDIT_RULES rules)"
+fi
+
+# Service sandboxing (systemd drop-ins)
+if [ -d /etc/systemd/system/caddy.service.d ] || [ -d /etc/systemd/system/sshd.service.d ]; then
+    DROPIN_COUNT=$(find /etc/systemd/system/*.service.d -name "*.conf" 2>/dev/null | wc -l)
+    check_pass "Service sandboxing active ($DROPIN_COUNT drop-ins)"
+else
+    check_warn "Service sandboxing drop-ins not found"
+fi
+
+# Hardened containers policy
+if grep -q "no_new_privileges.*true" /etc/containers/containers.conf 2>/dev/null || \
+   grep -q "cap-drop.*ALL\|default_capabilities" /etc/containers/containers.conf 2>/dev/null; then
+    check_pass "Hardened container security policy"
+else
+    check_warn "Default container security policy (not hardened)"
+fi
+
+# Journald Forward Secure Sealing
+if grep -q "^Seal=yes" /etc/systemd/journald.conf 2>/dev/null || \
+   grep -rq "^Seal=yes" /etc/systemd/journald.conf.d/ 2>/dev/null; then
+    check_pass "Journald Forward Secure Sealing enabled"
+else
+    check_warn "Journald FSS not enabled (run: journalctl --setup-keys)"
+fi
+
+# AIDE file integrity
+if command -v aide &>/dev/null; then
+    if [ -f /var/lib/aide/aide.db.gz ]; then
+        if systemctl is-active aide-check.timer &>/dev/null; then
+            check_pass "AIDE file integrity monitoring (timer active)"
+        else
+            check_warn "AIDE installed but daily timer not active"
+        fi
+    else
+        check_warn "AIDE installed but database not initialized"
+    fi
+else
+    check_warn "AIDE not installed (install via: paru -S aide)"
+fi
+
+# Restic offsite backup
+if command -v restic &>/dev/null; then
+    if systemctl is-active restic-backup.timer &>/dev/null; then
+        check_pass "Restic offsite backup (timer active)"
+    else
+        check_warn "Restic installed but backup timer not running"
+    fi
+else
+    check_warn "Restic offsite backup not configured"
+fi
+
+# arch-audit vulnerability scanner
+if systemctl is-active arch-audit.timer &>/dev/null; then
+    check_pass "arch-audit vulnerability scanner (weekly timer active)"
+else
+    check_warn "arch-audit timer not running"
+fi
+
+# Egress monitoring
+if nft list chain inet filter output 2>/dev/null | grep -q "log prefix"; then
+    if nft list chain inet filter output 2>/dev/null | grep -q "policy drop"; then
+        check_pass "Egress firewall (enforcing mode)"
+    else
+        check_pass "Egress monitoring active (log-only mode)"
+    fi
+else
+    check_warn "Egress monitoring not configured"
+fi
+
+# Enhanced ASLR entropy
+MMAP_RND=$(sysctl -n vm.mmap_rnd_bits 2>/dev/null || echo "0")
+if [ "$MMAP_RND" -ge 32 ]; then
+    check_pass "Enhanced ASLR entropy (vm.mmap_rnd_bits=$MMAP_RND)"
+else
+    check_warn "Default ASLR entropy (vm.mmap_rnd_bits=$MMAP_RND)"
 fi
 
 # Container Checks
@@ -353,6 +451,10 @@ FAILED_SERVICES=$(systemctl --failed --quiet --no-legend 2>/dev/null | wc -l)
 ROOT_USAGE=$(df / --output=pcent | tail -1 | tr -d ' %')
 TPM_AVAILABLE=$([ -e /dev/tpm0 ] || [ -e /dev/tpmrm0 ] && echo "true" || echo "false")
 SECURE_BOOT=$([ -d /sys/firmware/efi ] && mokutil --sb-state 2>/dev/null | grep -q "SecureBoot enabled" && echo "true" || echo "false")
+AUDIT_RULES=$(auditctl -l 2>/dev/null | wc -l || echo "0")
+MMAP_RND=$(sysctl -n vm.mmap_rnd_bits 2>/dev/null || echo "0")
+AIDE_DB=$([ -f /var/lib/aide/aide.db.gz ] && echo "true" || echo "false")
+DNS_DOT=$(grep -q "DNSOverTLS=yes" /etc/systemd/resolved.conf 2>/dev/null && echo "true" || echo "false")
 
 # Output
 if $JSON_OUTPUT; then
@@ -372,7 +474,11 @@ if $JSON_OUTPUT; then
         "failed_services": $FAILED_SERVICES,
         "btrfs_snapshots": $SNAPSHOT_COUNT,
         "tpm_available": $TPM_AVAILABLE,
-        "secure_boot_enabled": $SECURE_BOOT
+        "secure_boot_enabled": $SECURE_BOOT,
+        "audit_rules": $AUDIT_RULES,
+        "mmap_rnd_bits": $MMAP_RND,
+        "aide_db_initialized": $AIDE_DB,
+        "dns_over_tls": $DNS_DOT
     }
 }
 EOF
